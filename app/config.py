@@ -21,6 +21,9 @@ MEMORY_DIR = Path(os.environ.get("COACH_MEMORY_DIR", str(DATA_DIR / "memory")))
 # Dashboard snapshot (sync job writes, dashboard reads).
 SNAPSHOT_PATH = DATA_DIR / "snapshot.json"
 
+# Last coach reply (chat endpoint writes, dashboard plan box reads).
+LAST_REPLY_PATH = DATA_DIR / "last_reply.json"
+
 # Bundled brouter script (copied into the image).
 BROUTER_SCRIPT = os.environ.get("BROUTER_SCRIPT", "/srv/brouter/fetch_route.sh")
 

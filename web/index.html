@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cycling Coach</title>
+<script src="/static/marked.min.js"></script>
 <style>
   :root {
     --bg:#14181F; --panel:#1B212B; --panel2:#222A36; --line:#2D3744;
@@ -48,17 +49,38 @@
   /* chat */
   .chat-card { display:flex; flex-direction:column; height:560px; }
   #log { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:14px; padding-right:4px; }
-  .msg { max-width:88%; padding:11px 14px; border-radius:10px; font-size:14px; white-space:pre-wrap; line-height:1.5; }
-  .msg.user { align-self:flex-end; background:var(--amber); color:#1a1205; font-weight:500; }
+  .msg { max-width:88%; padding:11px 14px; border-radius:10px; font-size:14px; line-height:1.5; }
+  .msg.user { align-self:flex-end; background:var(--amber); color:#1a1205; font-weight:500; white-space:pre-wrap; }
   .msg.coach { align-self:flex-start; background:var(--panel2); border:1px solid var(--line); }
-  .msg.coach.thinking { color:var(--faint); font-style:italic; }
+  .msg.coach.thinking { color:var(--faint); font-style:italic; white-space:pre-wrap; }
+  /* markdown rendering inside coach messages and plan box */
+  .md-body { font-size:14px; line-height:1.6; }
+  .md-body p { margin:0 0 0.7em; }
+  .md-body p:last-child { margin-bottom:0; }
+  .md-body h1,.md-body h2,.md-body h3,.md-body h4 { margin:0.9em 0 0.4em; font-weight:700; line-height:1.2; }
+  .md-body h1 { font-size:1.15em; }
+  .md-body h2 { font-size:1.05em; }
+  .md-body h3,.md-body h4 { font-size:0.97em; }
+  .md-body ul,.md-body ol { margin:0 0 0.7em; padding-left:1.4em; }
+  .md-body li { margin-bottom:0.2em; }
+  .md-body code { background:rgba(255,255,255,0.07); border-radius:4px; padding:1px 5px; font-size:0.88em; font-family:monospace; }
+  .md-body pre { background:rgba(255,255,255,0.06); border-radius:6px; padding:10px 12px; overflow-x:auto; margin:0 0 0.7em; }
+  .md-body pre code { background:none; padding:0; }
+  .md-body strong { font-weight:700; }
+  .md-body em { font-style:italic; }
+  .md-body hr { border:none; border-top:1px solid var(--line); margin:0.8em 0; }
+  .md-body blockquote { border-left:3px solid var(--amber); margin:0 0 0.7em; padding-left:0.8em; color:var(--dim); }
+  /* plan box */
+  .plan-card { display:none; }
+  .plan-card.has-plan { display:block; }
+  .plan-ts { font-size:11px; color:var(--faint); margin-bottom:12px; }
+  /* route builder */
   .composer { display:flex; gap:8px; margin-top:14px; }
   .composer textarea { flex:1; resize:none; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:10px 12px; font:inherit; font-size:14px; height:46px; }
   .composer textarea:focus { outline:2px solid var(--amber); outline-offset:-1px; }
   .composer button { background:var(--amber); color:#1a1205; border:none; border-radius:8px; padding:0 18px; font-weight:700; cursor:pointer; font-size:14px; }
   .composer button:disabled { opacity:0.5; cursor:default; }
   .hint { font-size:11px; color:var(--faint); margin-top:8px; }
-  /* route builder */
   .route-form { display:flex; flex-direction:column; gap:10px; }
   .route-form input, .route-form select { background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:9px 11px; font:inherit; font-size:14px; }
   .route-form input:focus, .route-form select:focus { outline:2px solid var(--amber); outline-offset:-1px; }
@@ -121,22 +143,73 @@
       </section>
     </div>
 
-    <section class="card chat-card">
-      <h2>Ask your coach</h2>
-      <div id="log"></div>
-      <div class="composer">
-        <textarea id="input" placeholder="Tell your coach about your training, or ask what to do next…" rows="1"></textarea>
-        <button id="send">Send</button>
-      </div>
-      <div class="hint">Coach reads &amp; updates your memory and pulls live Strava. Responses stream in.</div>
-    </section>
+    <div class="col">
+      <section class="card chat-card">
+        <h2>Ask your coach</h2>
+        <div id="log"></div>
+        <div class="composer">
+          <textarea id="input" placeholder="Tell your coach about your training, or ask what to do next…" rows="1"></textarea>
+          <button id="send">Send</button>
+        </div>
+        <div class="hint">Coach reads &amp; updates your memory and pulls live Strava. Responses stream in.</div>
+      </section>
+
+      <section class="card plan-card" id="plan-card">
+        <h2>Latest plan</h2>
+        <div class="plan-ts" id="plan-ts"></div>
+        <div class="md-body" id="plan-body"></div>
+      </section>
+    </div>
   </div>
 </div>
 
 <script>
+// --- markdown ---------------------------------------------------------------
+marked.setOptions({ breaks: true, gfm: true });
+function renderMd(text) {
+  return marked.parse(text || "");
+}
+
+// --- utils ------------------------------------------------------------------
 const fmt = n => n == null ? "–" : Math.round(n).toLocaleString();
 let onboarded = true;
 
+// --- chat persistence (localStorage) ----------------------------------------
+const HISTORY_KEY = "coach_history";
+const MESSAGES_KEY = "coach_messages";
+
+function saveChat() {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    const msgs = [];
+    document.querySelectorAll("#log .msg").forEach(el => {
+      msgs.push({ role: el.classList.contains("user") ? "user" : "coach", html: el.innerHTML, text: el.dataset.text || "" });
+    });
+    localStorage.setItem(MESSAGES_KEY, JSON.stringify(msgs));
+  } catch {}
+}
+
+function restoreChat() {
+  try {
+    const h = localStorage.getItem(HISTORY_KEY);
+    if (h) history = JSON.parse(h);
+    const msgs = localStorage.getItem(MESSAGES_KEY);
+    if (!msgs) return false;
+    const parsed = JSON.parse(msgs);
+    if (!parsed.length) return false;
+    parsed.forEach(m => {
+      const el = document.createElement("div");
+      el.className = `msg ${m.role}`;
+      if (m.role === "user") { el.textContent = m.text || m.html; }
+      else { el.innerHTML = m.html; el.dataset.text = m.text; }
+      log.appendChild(el);
+    });
+    log.scrollTop = log.scrollHeight;
+    return true;
+  } catch { return false; }
+}
+
+// --- status / dashboard -----------------------------------------------------
 async function loadStatus() {
   try {
     const r = await fetch("/api/health");
@@ -144,7 +217,6 @@ async function loadStatus() {
     onboarded = !!h.onboarded;
     document.getElementById("onboard").style.display = onboarded ? "none" : "block";
     document.getElementById("goal-badge").textContent = onboarded ? "" : "Setup needed";
-    // Show the Strava connect prompt only when the app is configured but not yet authorized.
     document.getElementById("strava-banner").style.display =
       (h.strava_configured && !h.strava_connected) ? "block" : "none";
   } catch {}
@@ -180,6 +252,20 @@ async function loadDashboard() {
   }
 }
 
+async function loadPlan() {
+  try {
+    const r = await fetch("/api/last-reply");
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.text) return;
+    const card = document.getElementById("plan-card");
+    card.classList.add("has-plan");
+    document.getElementById("plan-ts").textContent =
+      d.saved_at ? "From " + new Date(d.saved_at).toLocaleString() : "";
+    document.getElementById("plan-body").innerHTML = renderMd(d.text);
+  } catch {}
+}
+
 async function loadRoutes() {
   try {
     const r = await fetch("/api/routes"); const d = await r.json();
@@ -192,7 +278,7 @@ async function loadRoutes() {
   } catch {}
 }
 
-// --- route builder ---
+// --- route builder ----------------------------------------------------------
 document.getElementById("r-go").addEventListener("click", async () => {
   const start = document.getElementById("r-start").value.trim();
   const end = document.getElementById("r-end").value.trim();
@@ -211,7 +297,7 @@ document.getElementById("r-go").addEventListener("click", async () => {
   finally { btn.disabled = false; }
 });
 
-// --- chat (SSE) ---
+// --- chat (SSE) -------------------------------------------------------------
 const log = document.getElementById("log");
 const input = document.getElementById("input");
 const send = document.getElementById("send");
@@ -223,17 +309,31 @@ function greet() {
     : "Hej! I'm your cycling coach, and I don't know you yet. Tell me a bit to get started: what kind of riding do you focus on (road, gravel, MTB, commuting?), and is there a goal or event you're training toward?";
   addMsg("coach", txt);
 }
+
 function addMsg(role, text, cls="") {
   const el = document.createElement("div");
-  el.className = `msg ${role} ${cls}`.trim(); el.textContent = text;
-  log.appendChild(el); log.scrollTop = log.scrollHeight; return el;
+  el.className = `msg ${role} ${cls}`.trim();
+  if (role === "user") {
+    el.textContent = text;
+    el.dataset.text = text;
+  } else {
+    el.innerHTML = renderMd(text);
+    el.dataset.text = text;
+  }
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
 }
 
 async function ask() {
   const q = input.value.trim(); if (!q) return;
   input.value = ""; send.disabled = true;
   addMsg("user", q); history.push({ role:"user", content:q });
-  const coachEl = addMsg("coach", "thinking…", "thinking");
+  const coachEl = document.createElement("div");
+  coachEl.className = "msg coach thinking";
+  coachEl.textContent = "thinking…";
+  log.appendChild(coachEl);
+  log.scrollTop = log.scrollHeight;
   let acc = "";
   try {
     const resp = await fetch("/api/chat", { method:"POST", headers:{"Content-Type":"application/json"},
@@ -246,19 +346,45 @@ async function ask() {
       for (const part of parts) {
         const line = part.replace(/^data: ?/, ""); if (!line || line === "[DONE]") continue;
         let evt; try { evt = JSON.parse(line); } catch { continue; }
-        if (evt.type === "text") { acc += evt.text; coachEl.classList.remove("thinking"); coachEl.textContent = acc; log.scrollTop = log.scrollHeight; }
-        else if (evt.type === "error") { coachEl.classList.remove("thinking"); coachEl.textContent = "⚠️ " + evt.text; }
-        else if (evt.type === "status") { if (evt.onboarded && !onboarded) { onboarded = true; loadStatus(); loadDashboard(); } }
+        if (evt.type === "text") {
+          acc += evt.text;
+          coachEl.classList.remove("thinking");
+          coachEl.innerHTML = renderMd(acc);
+          coachEl.dataset.text = acc;
+          log.scrollTop = log.scrollHeight;
+        } else if (evt.type === "error") {
+          coachEl.classList.remove("thinking");
+          coachEl.textContent = "⚠️ " + evt.text;
+        } else if (evt.type === "status") {
+          if (evt.onboarded && !onboarded) { onboarded = true; loadStatus(); loadDashboard(); }
+          // plan box may have been updated server-side — reload it
+          loadPlan();
+        }
       }
     }
     if (acc) history.push({ role:"assistant", content:acc });
-  } catch (e) { coachEl.classList.remove("thinking"); coachEl.textContent = "⚠️ Connection error: " + e.message; }
-  finally { send.disabled = false; input.focus(); }
+  } catch (e) {
+    coachEl.classList.remove("thinking");
+    coachEl.textContent = "⚠️ Connection error: " + e.message;
+  } finally {
+    send.disabled = false;
+    input.focus();
+    saveChat();
+  }
 }
+
 send.addEventListener("click", ask);
 input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } });
 
-(async () => { await loadStatus(); greet(); loadDashboard(); loadRoutes(); })();
+// --- init -------------------------------------------------------------------
+(async () => {
+  await loadStatus();
+  const restored = restoreChat();
+  if (!restored) greet();
+  loadDashboard();
+  loadRoutes();
+  loadPlan();
+})();
 setInterval(loadDashboard, 60000);
 </script>
 </body>

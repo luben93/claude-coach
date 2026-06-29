@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -28,6 +29,7 @@ from fastapi.responses import (
     RedirectResponse,
     StreamingResponse,
 )
+from fastapi.staticfiles import StaticFiles
 
 from . import coach, config, routes, strava, sync
 from .snapshot import read_snapshot
@@ -43,6 +45,7 @@ log = logging.getLogger("coach.server")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 app = FastAPI(title="Cycling Coach")
+app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 
 @app.middleware("http")
@@ -136,6 +139,26 @@ async def snapshot() -> JSONResponse:
     return JSONResponse(snap)
 
 
+def _save_last_reply(text: str) -> None:
+    try:
+        payload = {"text": text, "saved_at": datetime.now(timezone.utc).isoformat()}
+        tmp = config.LAST_REPLY_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(config.LAST_REPLY_PATH)
+    except Exception:
+        log.exception("failed to save last reply")
+
+
+@app.get("/api/last-reply")
+async def last_reply() -> JSONResponse:
+    if not config.LAST_REPLY_PATH.exists():
+        return JSONResponse({"error": "no reply yet"}, status_code=404)
+    try:
+        return JSONResponse(json.loads(config.LAST_REPLY_PATH.read_text()))
+    except Exception:
+        return JSONResponse({"error": "unreadable"}, status_code=500)
+
+
 @app.post("/api/sync")
 async def trigger_sync() -> JSONResponse:
     return JSONResponse(await sync.run_once())
@@ -152,11 +175,15 @@ async def chat(req: Request) -> StreamingResponse:
             yield _sse({"type": "error", "text": "empty message"})
             yield "data: [DONE]\n\n"
             return
+        acc = ""
         try:
             async for chunk in coach.stream_reply(message, history):
+                acc += chunk
                 yield _sse({"type": "text", "text": chunk})
         except Exception as e:
             yield _sse({"type": "error", "text": str(e)})
+        if acc:
+            _save_last_reply(acc)
         # onboarding may have completed during this turn; signal the UI to refresh
         yield _sse({"type": "status", "onboarded": config.is_onboarded()})
         yield "data: [DONE]\n\n"
