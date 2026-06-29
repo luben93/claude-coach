@@ -87,6 +87,10 @@
     <b>First time here.</b> Your coach doesn't know you yet — head to the chat and it'll ask a few questions about your focus and goal, then start tracking your training journey.
   </div>
 
+  <div id="strava-banner" class="onboard" style="display:none">
+    <b>Connect Strava</b> to pull in your rides. <a href="/api/strava/connect" style="color:var(--amber);font-weight:600">Authorize now →</a>
+  </div>
+
   <div class="grid">
     <div class="col">
       <section class="card">
@@ -140,6 +144,9 @@ async function loadStatus() {
     onboarded = !!h.onboarded;
     document.getElementById("onboard").style.display = onboarded ? "none" : "block";
     document.getElementById("goal-badge").textContent = onboarded ? "" : "Setup needed";
+    // Show the Strava connect prompt only when the app is configured but not yet authorized.
+    document.getElementById("strava-banner").style.display =
+      (h.strava_configured && !h.strava_connected) ? "block" : "none";
   } catch {}
 }
 

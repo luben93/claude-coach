@@ -1,34 +1,67 @@
-"""FastAPI server — dashboard, chat, Strava sync, brouter routes.
+"""FastAPI server — dashboard, chat, Strava (REST/OAuth) sync, brouter routes.
 
 LAN-only by intent; no UI auth. Endpoints:
-  GET  /                    -> dashboard + chat page
-  GET  /api/health          -> liveness + auth/MCP/onboarding status
-  GET  /api/onboarding      -> {onboarded: bool}
-  GET  /api/snapshot        -> latest cached Strava snapshot
-  POST /api/sync            -> trigger an immediate sync
-  POST /api/chat            -> SSE stream of the coach's reply
-  POST /api/route           -> generate a GPX via brouter (manual panel)
-  GET  /api/routes          -> list generated GPX files
-  GET  /api/routes/{name}   -> download a GPX file
+  GET  /                       -> dashboard + chat page
+  GET  /api/health             -> liveness + auth/strava/onboarding status
+  GET  /api/onboarding         -> {onboarded: bool}
+  GET  /api/snapshot           -> latest cached Strava snapshot
+  POST /api/sync               -> trigger an immediate sync
+  POST /api/chat               -> SSE stream of the coach's reply
+  GET  /api/strava/connect     -> redirect to Strava OAuth (one-time)
+  GET  /api/strava/callback    -> OAuth redirect target; stores tokens
+  POST /api/route              -> generate a GPX via brouter (manual panel)
+  GET  /api/routes             -> list generated GPX files
+  GET  /api/routes/{name}      -> download a GPX file
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 
-from . import coach, config, routes, sync
+from . import coach, config, routes, strava, sync
 from .snapshot import read_snapshot
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+# Logging: explicit level (override with COACH_LOG_LEVEL), timestamped, named.
+# This is what surfaces Strava/coach failures in `docker compose logs`.
+import os
+logging.basicConfig(
+    level=os.environ.get("COACH_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+)
 log = logging.getLogger("coach.server")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 app = FastAPI(title="Cycling Coach")
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """Log every request with status + latency. API errors become visible here."""
+    start = time.monotonic()
+    try:
+        resp = await call_next(request)
+    except Exception:
+        log.exception("unhandled error on %s %s", request.method, request.url.path)
+        raise
+    ms = (time.monotonic() - start) * 1000
+    # don't spam for the static page / health polling at debug-worthy volume
+    level = logging.WARNING if resp.status_code >= 400 else logging.INFO
+    if request.url.path == "/" or request.url.path.startswith("/api/snapshot"):
+        level = logging.DEBUG
+    log.log(level, "%s %s -> %s (%.0fms)", request.method, request.url.path,
+            resp.status_code, ms)
+    return resp
 
 
 @app.on_event("startup")
@@ -36,10 +69,14 @@ async def _startup() -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     asyncio.create_task(sync.loop())
-    log.info("coach up — data=%s memory=%s strava=%s onboarded=%s",
-             config.DATA_DIR, config.MEMORY_DIR,
-             "configured" if config.strava_mcp_config() else "OFF",
-             config.is_onboarded())
+    log.info("coach up — data=%s memory=%s", config.DATA_DIR, config.MEMORY_DIR)
+    log.info("status — sdk=%s claude_auth=%s strava_configured=%s strava_connected=%s onboarded=%s",
+             coach.SDK_AVAILABLE, bool(config.claude_oauth_token()),
+             config.strava_configured(), strava.is_connected(), config.is_onboarded())
+    if config.strava_configured() and not strava.is_connected():
+        log.warning("Strava app configured but NOT authorized — visit /api/strava/connect once")
+    if not config.strava_configured():
+        log.warning("Strava client id/secret not set — no activity data will sync")
 
 
 @app.get("/api/health")
@@ -48,10 +85,42 @@ async def health() -> JSONResponse:
         "ok": True,
         "sdk": coach.SDK_AVAILABLE,
         "authenticated": bool(config.claude_oauth_token()),
-        "strava_mcp": bool(config.strava_mcp_config()),
+        "strava_configured": config.strava_configured(),
+        "strava_connected": strava.is_connected(),
         "onboarded": config.is_onboarded(),
         "snapshot": config.SNAPSHOT_PATH.exists(),
     })
+
+
+# --- Strava OAuth ----------------------------------------------------------
+def _redirect_uri() -> str:
+    return config.PUBLIC_BASE_URL.rstrip("/") + "/api/strava/callback"
+
+
+@app.get("/api/strava/connect")
+async def strava_connect() -> RedirectResponse:
+    if not config.strava_configured():
+        return JSONResponse({"error": "Strava client id/secret not configured"}, status_code=400)
+    url = strava.authorize_url(_redirect_uri())
+    log.info("redirecting athlete to Strava authorization")
+    return RedirectResponse(url)
+
+
+@app.get("/api/strava/callback")
+async def strava_callback(code: str = "", error: str = "") -> RedirectResponse:
+    if error:
+        log.warning("Strava authorization denied: %s", error)
+        return RedirectResponse("/?strava=denied")
+    if not code:
+        return RedirectResponse("/?strava=missing_code")
+    try:
+        await asyncio.to_thread(strava.exchange_code, code)
+    except strava.StravaError as e:
+        log.error("Strava code exchange failed: %s", e)
+        return RedirectResponse("/?strava=error")
+    # first connect → kick a sync so the dashboard fills immediately
+    asyncio.create_task(sync.run_once())
+    return RedirectResponse("/?strava=connected")
 
 
 @app.get("/api/onboarding")
@@ -69,8 +138,7 @@ async def snapshot() -> JSONResponse:
 
 @app.post("/api/sync")
 async def trigger_sync() -> JSONResponse:
-    wrote = await sync.run_once()
-    return JSONResponse({"synced": wrote})
+    return JSONResponse(await sync.run_once())
 
 
 @app.post("/api/chat")

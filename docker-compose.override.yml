@@ -1,0 +1,20 @@
+# Development override — applied automatically by `docker compose up` and
+# `docker compose watch` (NOT by `docker compose -f docker-compose.yml up`).
+#
+# It runs uvicorn with --reload so files synced by `docker compose watch` take
+# effect immediately, and verbose logging. For production, deploy with only the
+# base file:  docker compose -f docker-compose.yml up -d
+services:
+  coach:
+    command:
+      - uvicorn
+      - app.server:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --reload
+      - --reload-dir
+      - /srv/app
+    environment:
+      COACH_LOG_LEVEL: ${COACH_LOG_LEVEL:-DEBUG}

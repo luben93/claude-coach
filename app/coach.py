@@ -7,21 +7,22 @@ writes goal.md / profile.md and begins a journey.md training log.
 
 Capabilities given to the agent:
   - Read/Write/Edit/Grep/Glob over the memory dir (its own knowledge base)
-  - Strava MCP (remote) for live activity data
-  - A `generate_route` flow via brouter (bike GPX) — surfaced through bash on the
-    bundled script; see routes.py for the programmatic path used by the manual panel.
+  - Bash, for the bundled brouter route script
+Recent Strava activities are injected as conversation context (pulled live via the
+REST client in strava.py, cached in the snapshot) — not an MCP tool.
 
 Exposes:
   - stream_reply(): async text chunks for the chat UI (SSE)
-  - fetch_activities(): one-shot pull of recent rides for the sync job
 """
 from __future__ import annotations
 
-import json
+import logging
 import os
 from typing import Any, AsyncIterator
 
 from . import config
+
+log = logging.getLogger("coach.agent")
 
 _tok = config.claude_oauth_token()
 if _tok:
@@ -66,7 +67,7 @@ If `goal.md` does not exist yet, you have NOT met this athlete. Do not give advi
 Ask a few questions at a time, not all at once. When you have enough, WRITE goal.md, profile.md, and preferences.md, start journey.md with today's date and a baseline note, then confirm what you captured and what you'll do next.
 
 ## Live data
-Use the Strava tools to pull real activities when analyzing a ride or current fitness — don't rely on memory alone for recent training. Cross-reference summary stats with segment/stream data when terrain matters. Never trust Strava ESTIMATED power for bikes without a power meter — only power-meter data counts; note when you're unsure.
+Recent Strava activities are provided to you as context at the top of the conversation (pulled live from the Strava API). Use them when analyzing a ride or current fitness — don't rely on memory alone for recent training. If no activity data is present, it means Strava isn't connected yet; tell the athlete to connect it from the dashboard. Never trust Strava ESTIMATED power for bikes without a power meter — only power-meter data counts; note when you're unsure.
 
 ## Routes
 You can generate bike GPX routes with brouter. When the athlete asks for a route, run the bundled script via bash:
@@ -77,23 +78,17 @@ Geocode place names first with Nominatim (lon,lat order — longitude first). Pi
 Direct and practical — lead with the answer. Use the athlete's own units and real calendar dates. Frame advice around their stated goal. Coach principles apply (polarized base, progressive overload, recovery matters, specificity to the goal), but the numbers are always theirs."""
 
 
-def _options(*, allow_strava: bool = True, writable: bool = True) -> "ClaudeAgentOptions":
+def _options(*, writable: bool = True) -> "ClaudeAgentOptions":
     """Headless permission setup — string prompts, no interactive approval.
 
-    The combination that works headlessly without root and without a streaming
-    callback is `permission_mode="dontAsk"` + an `allowed_tools` allowlist:
+    `permission_mode="dontAsk"` + an `allowed_tools` allowlist:
       - tools in the allowlist auto-execute (no prompt),
       - anything else is denied silently (no hang waiting for an approver).
-    The coach's tool set is fixed and fully listed below, so nothing it needs is
-    ever denied.
+    Not root-blocked (unlike bypassPermissions) and needs no streaming callback.
+    The container also runs as a non-root user (Dockerfile) — defence in depth.
 
-    Why not the alternatives:
-      - "bypassPermissions" maps to --dangerously-skip-permissions, which the CLI
-        refuses under root.
-      - the default mode routes unlisted tools to a can_use_tool callback, which
-        requires streaming/AsyncIterable prompts (we use plain string prompts) and
-        otherwise hangs.
-    The container also runs as a non-root user (see Dockerfile) — defence in depth.
+    Strava is no longer an MCP tool — activity data is injected as context (see
+    stream_reply). The coach's tools are just file access + Bash (for brouter).
     """
     tools = ["Read", "Grep", "Glob"]
     if writable:
@@ -105,12 +100,6 @@ def _options(*, allow_strava: bool = True, writable: bool = True) -> "ClaudeAgen
         "permission_mode": "dontAsk",
         "allowed_tools": list(tools),
     }
-    mcp = config.strava_mcp_config() if allow_strava else None
-    if mcp:
-        for v in mcp.values():
-            v["type"] = config.STRAVA_MCP_TRANSPORT
-        kwargs["mcp_servers"] = mcp
-        kwargs["allowed_tools"].append("mcp__strava")
     if config.MODEL:
         kwargs["model"] = config.MODEL
     return ClaudeAgentOptions(**kwargs)
@@ -135,7 +124,7 @@ async def stream_reply(message: str, history: list[dict[str, str]]) -> AsyncIter
                "the mounted volume (CLAUDE_CODE_OAUTH_TOKEN).")
         return
 
-    prompt = _format_history(history) + message
+    prompt = _strava_context() + _format_history(history) + message
     try:
         async for msg in query(prompt=prompt, options=_options()):
             content = getattr(msg, "content", None)
@@ -149,51 +138,34 @@ async def stream_reply(message: str, history: list[dict[str, str]]) -> AsyncIter
                 if text:
                     yield text
     except Exception as e:
+        log.exception("coach stream failed")
         yield f"\n\n[coach error: {e}]"
 
 
-async def fetch_activities(limit: int = 20) -> list[dict[str, Any]]:
-    """One-shot pull of recent activities for the sync job."""
-    if not SDK_AVAILABLE or not config.strava_mcp_config():
-        return []
-    instruction = (
-        f"Call the strava list_activities tool for the {limit} most recent activities. "
-        "Return ONLY a JSON array of the raw activity objects, no prose, no code fences. "
-        "Keep: id, name, sport_type, start_local, is_commute, activity_tags, and the "
-        "summary object (distance, elevation_gain, average_heartrate, average_watts)."
-    )
-    buf = ""
-    try:
-        # read-only for the sync job — it must not touch memory
-        async for msg in query(prompt=instruction, options=_options(writable=False)):
-            content = getattr(msg, "content", None)
-            if isinstance(content, list):
-                for block in content:
-                    t = getattr(block, "text", None)
-                    if t:
-                        buf += t
-            elif isinstance(content, str):
-                buf += content
-    except Exception:
-        return []
-    return _extract_json_array(buf)
+def _strava_context() -> str:
+    """Recent activities as a context preamble, pulled live (cheap, cached snapshot).
 
-
-def _extract_json_array(text: str) -> list[dict[str, Any]]:
-    text = text.strip()
-    if "```" in text:
-        for p in text.split("```"):
-            p = p.strip()
-            if p.startswith("json"):
-                p = p[4:].strip()
-            if p.startswith("["):
-                text = p
-                break
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        return []
-    try:
-        data = json.loads(text[start:end + 1])
-        return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
-        return []
+    We read the snapshot the sync job already wrote rather than hitting the API on
+    every chat turn. If absent/empty, the coach is told Strava isn't connected.
+    """
+    from .snapshot import read_snapshot  # local import to avoid cycles
+    snap = read_snapshot(config.SNAPSHOT_PATH)
+    if not snap or not snap.get("rides"):
+        if not config.strava_configured():
+            return ""  # Strava not set up at all — say nothing, coach handles it
+        return ("[Strava: connected app but no recent activities cached yet, or not "
+                "authorized. If the athlete asks about recent rides, tell them to "
+                "connect Strava from the dashboard.]\n\n")
+    lines = ["[Recent Strava activities — pulled from the athlete's account:]"]
+    for r in snap["rides"][:10]:
+        bits = [r.get("date") or "", r.get("name") or "ride"]
+        if r.get("distance_km") is not None:
+            bits.append(f"{r['distance_km']:.1f}km")
+        if r.get("elevation_m") is not None:
+            bits.append(f"{round(r['elevation_m'])}m")
+        if r.get("avg_hr") is not None:
+            bits.append(f"HR {round(r['avg_hr'])}")
+        if r.get("avg_watts") is not None:
+            bits.append(f"{round(r['avg_watts'])}W")
+        lines.append("  - " + " · ".join(b for b in bits if b))
+    return "\n".join(lines) + "\n\n"

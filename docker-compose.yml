@@ -19,15 +19,36 @@ services:
       # athlete's private training journey), generated GPX routes, the snapshot.
       - coach:/data
     environment:
-      # Remote Strava MCP. Set in .env (or write the token to ./data/strava_token).
-      STRAVA_MCP_URL: ${STRAVA_MCP_URL:-}
-      STRAVA_MCP_TOKEN: ${STRAVA_MCP_TOKEN:-}
-      STRAVA_MCP_TRANSPORT: ${STRAVA_MCP_TRANSPORT:-http}
+      # Strava API app credentials (REST + OAuth). Set in .env.
+      STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID:-}
+      STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET:-}
+      # Public URL for the OAuth redirect (must match Strava app callback domain).
+      COACH_PUBLIC_URL: ${COACH_PUBLIC_URL:-http://localhost:8080}
       # Subscription OAuth token from `claude setup-token`
-      # (or persist it at ./data/claude-home/oauth_token).
+      # (or persist it at /data/claude-home/oauth_token on the volume).
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       COACH_SYNC_INTERVAL: ${COACH_SYNC_INTERVAL:-3600}
       COACH_MODEL: ${COACH_MODEL:-}
+      COACH_LOG_LEVEL: ${COACH_LOG_LEVEL:-INFO}
+    # Live-reload for development: `docker compose watch`.
+    # Inert during a normal `up` — only the `watch` command acts on this.
+    # Pairs with docker-compose.override.yml (adds uvicorn --reload) so synced
+    # code takes effect without a restart.
+    develop:
+      watch:
+        # App + UI changes are copied straight into the running container.
+        - action: sync
+          path: ./app
+          target: /srv/app
+        - action: sync
+          path: ./web
+          target: /srv/web
+        # Dependency or image changes require a rebuild.
+        - action: rebuild
+          path: ./requirements.txt
+        - action: rebuild
+          path: ./Dockerfile
+
     # Hardening for a published image.
     security_opt:
       - no-new-privileges:true

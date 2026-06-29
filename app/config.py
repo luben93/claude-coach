@@ -21,9 +21,6 @@ MEMORY_DIR = Path(os.environ.get("COACH_MEMORY_DIR", str(DATA_DIR / "memory")))
 # Dashboard snapshot (sync job writes, dashboard reads).
 SNAPSHOT_PATH = DATA_DIR / "snapshot.json"
 
-# Optional Strava token file on the volume (alternative to env var).
-STRAVA_TOKEN_FILE = DATA_DIR / "strava_token"
-
 # Bundled brouter script (copied into the image).
 BROUTER_SCRIPT = os.environ.get("BROUTER_SCRIPT", "/srv/brouter/fetch_route.sh")
 
@@ -39,28 +36,34 @@ def claude_oauth_token() -> str | None:
     return None
 
 
-def strava_token() -> str | None:
-    tok = os.environ.get("STRAVA_MCP_TOKEN")
-    if tok:
-        return tok.strip()
-    if STRAVA_TOKEN_FILE.exists():
-        return STRAVA_TOKEN_FILE.read_text().strip()
+# --- Strava REST (OAuth) ---------------------------------------------------
+# client id/secret obtain & refresh per-athlete tokens. Read from env only;
+# never logged or returned to the UI. We accept a couple of env spellings so a
+# hand-written .env doesn't trip people up.
+def strava_client_id() -> str | None:
+    for k in ("STRAVA_CLIENT_ID", "ClientID", "CLIENT_ID"):
+        v = os.environ.get(k)
+        if v:
+            return v.strip()
     return None
 
 
-# --- Strava MCP (remote HTTP/SSE) ------------------------------------------
-STRAVA_MCP_URL = os.environ.get("STRAVA_MCP_URL", "")
-STRAVA_MCP_TRANSPORT = os.environ.get("STRAVA_MCP_TRANSPORT", "http")
+def strava_client_secret() -> str | None:
+    for k in ("STRAVA_CLIENT_SECRET", "ClientSecret", "CLIENT_SECRET"):
+        v = os.environ.get(k)
+        if v:
+            return v.strip()
+    return None
 
 
-def strava_mcp_config() -> dict | None:
-    if not STRAVA_MCP_URL:
-        return None
-    headers = {}
-    tok = strava_token()
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    return {"strava": {"type": STRAVA_MCP_TRANSPORT, "url": STRAVA_MCP_URL, "headers": headers}}
+def strava_configured() -> bool:
+    return bool(strava_client_id() and strava_client_secret())
+
+
+# Public base URL the athlete's browser can reach this app at, for the OAuth
+# redirect. Strava requires the callback host to match the app's Authorization
+# Callback Domain. Defaults to localhost for local testing.
+PUBLIC_BASE_URL = os.environ.get("COACH_PUBLIC_URL", f"http://localhost:{os.environ.get('COACH_PORT','8080')}")
 
 
 # --- Onboarding ------------------------------------------------------------
