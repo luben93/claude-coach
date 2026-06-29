@@ -1,0 +1,18 @@
+# Secrets and per-deployment state — NEVER publish these.
+.env
+.env.*
+!.env.example
+
+# The mounted volume: OAuth token, Strava token, the athlete's private memory
+# (their training journey), generated routes, snapshot, Claude Code state.
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+*.swp

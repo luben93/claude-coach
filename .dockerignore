@@ -1,0 +1,12 @@
+# Keep secrets and local state OUT of the build context / image.
+.env
+.env.*
+!.env.example
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.git/
+.DS_Store
+README.md

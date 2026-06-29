@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cycling Coach</title>
+<style>
+  :root {
+    --bg:#14181F; --panel:#1B212B; --panel2:#222A36; --line:#2D3744;
+    --text:#E6E9EE; --dim:#9AA8B8; --faint:#6B7888;
+    --amber:#E8923A; --good:#4FB286; --warn:#E0B341; --bad:#D26464;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:"Avenir Next","Segoe UI",system-ui,-apple-system,sans-serif;
+    line-height:1.5; font-size:15px; }
+  .wrap { max-width:1040px; margin:0 auto; padding:24px 20px 60px; }
+  header { display:flex; align-items:baseline; gap:14px; padding-bottom:18px;
+    border-bottom:1px solid var(--line); margin-bottom:24px; flex-wrap:wrap; }
+  header h1 { font-size:22px; margin:0; font-weight:700; letter-spacing:-0.01em; }
+  header .badge { font-size:12px; color:var(--amber); letter-spacing:0.14em;
+    text-transform:uppercase; font-weight:600; }
+  header .spacer { flex:1; }
+  header .sync { font-size:12px; color:var(--faint); }
+  .grid { display:grid; grid-template-columns:1.1fr 1fr; gap:18px; }
+  @media (max-width:820px){ .grid{ grid-template-columns:1fr; } }
+  .col { display:flex; flex-direction:column; gap:18px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:18px 20px; }
+  .card h2 { font-size:12px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--faint); margin:0 0 14px; font-weight:600; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:18px; }
+  .stat { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  .stat .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .stat .l { font-size:11px; color:var(--faint); letter-spacing:0.08em; text-transform:uppercase; margin-top:2px; }
+  .ride { display:grid; grid-template-columns:1fr auto; gap:4px 12px; padding:11px 0; border-bottom:1px solid var(--line); }
+  .ride:last-child { border-bottom:none; }
+  .ride .name { font-weight:600; font-size:14px; }
+  .ride .date { font-size:12px; color:var(--faint); }
+  .ride .metrics { grid-column:1/-1; font-size:12.5px; color:var(--dim); font-variant-numeric:tabular-nums; display:flex; gap:16px; flex-wrap:wrap; }
+  .ride .metrics b { color:var(--text); font-weight:600; }
+  .tag { display:inline-block; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; padding:2px 7px; border-radius:4px; font-weight:600; background:rgba(232,146,58,0.13); color:var(--amber); }
+  .empty { color:var(--faint); font-size:14px; padding:18px 0; text-align:center; }
+  /* onboarding banner */
+  .onboard { background:rgba(232,146,58,0.08); border:1px solid var(--amber);
+    border-radius:10px; padding:14px 18px; margin-bottom:18px; font-size:14px; color:var(--text); }
+  .onboard b { color:var(--amber); }
+  /* chat */
+  .chat-card { display:flex; flex-direction:column; height:560px; }
+  #log { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:14px; padding-right:4px; }
+  .msg { max-width:88%; padding:11px 14px; border-radius:10px; font-size:14px; white-space:pre-wrap; line-height:1.5; }
+  .msg.user { align-self:flex-end; background:var(--amber); color:#1a1205; font-weight:500; }
+  .msg.coach { align-self:flex-start; background:var(--panel2); border:1px solid var(--line); }
+  .msg.coach.thinking { color:var(--faint); font-style:italic; }
+  .composer { display:flex; gap:8px; margin-top:14px; }
+  .composer textarea { flex:1; resize:none; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:10px 12px; font:inherit; font-size:14px; height:46px; }
+  .composer textarea:focus { outline:2px solid var(--amber); outline-offset:-1px; }
+  .composer button { background:var(--amber); color:#1a1205; border:none; border-radius:8px; padding:0 18px; font-weight:700; cursor:pointer; font-size:14px; }
+  .composer button:disabled { opacity:0.5; cursor:default; }
+  .hint { font-size:11px; color:var(--faint); margin-top:8px; }
+  /* route builder */
+  .route-form { display:flex; flex-direction:column; gap:10px; }
+  .route-form input, .route-form select { background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:9px 11px; font:inherit; font-size:14px; }
+  .route-form input:focus, .route-form select:focus { outline:2px solid var(--amber); outline-offset:-1px; }
+  .route-form button { background:var(--amber); color:#1a1205; border:none; border-radius:8px; padding:10px; font-weight:700; cursor:pointer; }
+  .route-form button:disabled { opacity:0.5; }
+  .route-status { font-size:13px; margin-top:4px; min-height:18px; }
+  .route-status.ok { color:var(--good); }
+  .route-status.err { color:var(--bad); }
+  .route-list { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
+  .route-item { display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .route-item:last-child { border-bottom:none; }
+  .route-item a { color:var(--amber); text-decoration:none; font-weight:600; }
+  .route-item .fname { color:var(--dim); word-break:break-all; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Cycling Coach</h1>
+    <span class="badge" id="goal-badge"></span>
+    <span class="spacer"></span>
+    <span class="sync" id="sync">syncing…</span>
+  </header>
+
+  <div id="onboard" class="onboard" style="display:none">
+    <b>First time here.</b> Your coach doesn't know you yet — head to the chat and it'll ask a few questions about your focus and goal, then start tracking your training journey.
+  </div>
+
+  <div class="grid">
+    <div class="col">
+      <section class="card">
+        <h2>Recent training</h2>
+        <div class="stats">
+          <div class="stat"><div class="v" id="s-week">–</div><div class="l">km this week</div></div>
+          <div class="stat"><div class="v" id="s-count">–</div><div class="l">rides (14d)</div></div>
+          <div class="stat"><div class="v" id="s-climb">–</div><div class="l">m climbed (14d)</div></div>
+        </div>
+        <div id="rides"><div class="empty">Loading rides…</div></div>
+      </section>
+
+      <section class="card">
+        <h2>Plan a route</h2>
+        <div class="route-form">
+          <input id="r-start" placeholder="Start — place name or lon,lat">
+          <input id="r-end" placeholder="End — place name or lon,lat">
+          <select id="r-profile">
+            <option value="trekking">Gravel / MTB (trekking)</option>
+            <option value="fastbike">Road (fastbike)</option>
+            <option value="trekking-fast">Trekking — fast</option>
+            <option value="trekking-safe">Quiet / relaxed (safe)</option>
+          </select>
+          <button id="r-go">Generate GPX</button>
+          <div class="route-status" id="r-status"></div>
+        </div>
+        <div class="route-list" id="route-list"></div>
+      </section>
+    </div>
+
+    <section class="card chat-card">
+      <h2>Ask your coach</h2>
+      <div id="log"></div>
+      <div class="composer">
+        <textarea id="input" placeholder="Tell your coach about your training, or ask what to do next…" rows="1"></textarea>
+        <button id="send">Send</button>
+      </div>
+      <div class="hint">Coach reads &amp; updates your memory and pulls live Strava. Responses stream in.</div>
+    </section>
+  </div>
+</div>
+
+<script>
+const fmt = n => n == null ? "–" : Math.round(n).toLocaleString();
+let onboarded = true;
+
+async function loadStatus() {
+  try {
+    const r = await fetch("/api/health");
+    const h = await r.json();
+    onboarded = !!h.onboarded;
+    document.getElementById("onboard").style.display = onboarded ? "none" : "block";
+    document.getElementById("goal-badge").textContent = onboarded ? "" : "Setup needed";
+  } catch {}
+}
+
+async function loadDashboard() {
+  try {
+    const r = await fetch("/api/snapshot");
+    if (!r.ok) throw new Error("no snapshot");
+    const d = await r.json();
+    document.getElementById("s-week").textContent  = fmt(d.km_this_week);
+    document.getElementById("s-count").textContent = fmt(d.ride_count_14d);
+    document.getElementById("s-climb").textContent = fmt(d.climb_14d);
+    document.getElementById("sync").textContent =
+      d.synced_at ? "synced " + new Date(d.synced_at).toLocaleString() : "not synced";
+    const box = document.getElementById("rides");
+    if (!d.rides || !d.rides.length) { box.innerHTML = '<div class="empty">No rides cached yet.</div>'; return; }
+    box.innerHTML = "";
+    for (const ride of d.rides) {
+      const el = document.createElement("div"); el.className = "ride";
+      const dist = ride.distance_km != null ? `<b>${ride.distance_km.toFixed(1)}</b> km` : "";
+      const gain = ride.elevation_m != null ? `<b>${fmt(ride.elevation_m)}</b> m` : "";
+      const hr   = ride.avg_hr != null ? `HR <b>${fmt(ride.avg_hr)}</b>` : "";
+      const pw   = ride.avg_watts != null ? `<b>${fmt(ride.avg_watts)}</b> W` : "";
+      el.innerHTML = `<div class="name">${ride.name || "Ride"} ${ride.tag ? `<span class="tag">${ride.tag}</span>` : ""}</div>
+        <div class="date">${ride.date || ""}</div>
+        <div class="metrics">${[dist,gain,hr,pw].filter(Boolean).join(" ")}</div>`;
+      box.appendChild(el);
+    }
+  } catch {
+    document.getElementById("sync").textContent = "sync unavailable";
+    document.getElementById("rides").innerHTML = '<div class="empty">No snapshot yet — sync hasn\'t run.</div>';
+  }
+}
+
+async function loadRoutes() {
+  try {
+    const r = await fetch("/api/routes"); const d = await r.json();
+    const box = document.getElementById("route-list"); box.innerHTML = "";
+    for (const rt of (d.routes || [])) {
+      const el = document.createElement("div"); el.className = "route-item";
+      el.innerHTML = `<span class="fname">${rt.file}</span><a href="/api/routes/${encodeURIComponent(rt.file)}" download>download</a>`;
+      box.appendChild(el);
+    }
+  } catch {}
+}
+
+// --- route builder ---
+document.getElementById("r-go").addEventListener("click", async () => {
+  const start = document.getElementById("r-start").value.trim();
+  const end = document.getElementById("r-end").value.trim();
+  const profile = document.getElementById("r-profile").value;
+  const status = document.getElementById("r-status");
+  const btn = document.getElementById("r-go");
+  if (!start || !end) { status.className="route-status err"; status.textContent="Enter a start and end."; return; }
+  btn.disabled = true; status.className="route-status"; status.textContent="Routing…";
+  try {
+    const r = await fetch("/api/route", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ start, end, profile }) });
+    const d = await r.json();
+    if (d.ok) { status.className="route-status ok"; status.textContent=`Saved ${d.file} (${d.profile}).`; loadRoutes(); }
+    else { status.className="route-status err"; status.textContent=d.error || "Failed."; }
+  } catch (e) { status.className="route-status err"; status.textContent="Error: "+e.message; }
+  finally { btn.disabled = false; }
+});
+
+// --- chat (SSE) ---
+const log = document.getElementById("log");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+let history = [];
+
+function greet() {
+  const txt = onboarded
+    ? "Welcome back. Ask me about a ride, your plan, or what to do next — I'll pull fresh Strava and use what I know about you."
+    : "Hej! I'm your cycling coach, and I don't know you yet. Tell me a bit to get started: what kind of riding do you focus on (road, gravel, MTB, commuting?), and is there a goal or event you're training toward?";
+  addMsg("coach", txt);
+}
+function addMsg(role, text, cls="") {
+  const el = document.createElement("div");
+  el.className = `msg ${role} ${cls}`.trim(); el.textContent = text;
+  log.appendChild(el); log.scrollTop = log.scrollHeight; return el;
+}
+
+async function ask() {
+  const q = input.value.trim(); if (!q) return;
+  input.value = ""; send.disabled = true;
+  addMsg("user", q); history.push({ role:"user", content:q });
+  const coachEl = addMsg("coach", "thinking…", "thinking");
+  let acc = "";
+  try {
+    const resp = await fetch("/api/chat", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ message:q, history: history.slice(0,-1) }) });
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream:true });
+      const parts = buf.split("\n\n"); buf = parts.pop();
+      for (const part of parts) {
+        const line = part.replace(/^data: ?/, ""); if (!line || line === "[DONE]") continue;
+        let evt; try { evt = JSON.parse(line); } catch { continue; }
+        if (evt.type === "text") { acc += evt.text; coachEl.classList.remove("thinking"); coachEl.textContent = acc; log.scrollTop = log.scrollHeight; }
+        else if (evt.type === "error") { coachEl.classList.remove("thinking"); coachEl.textContent = "⚠️ " + evt.text; }
+        else if (evt.type === "status") { if (evt.onboarded && !onboarded) { onboarded = true; loadStatus(); loadDashboard(); } }
+      }
+    }
+    if (acc) history.push({ role:"assistant", content:acc });
+  } catch (e) { coachEl.classList.remove("thinking"); coachEl.textContent = "⚠️ Connection error: " + e.message; }
+  finally { send.disabled = false; input.focus(); }
+}
+send.addEventListener("click", ask);
+input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } });
+
+(async () => { await loadStatus(); greet(); loadDashboard(); loadRoutes(); })();
+setInterval(loadDashboard, 60000);
+</script>
+</body>
+</html>
