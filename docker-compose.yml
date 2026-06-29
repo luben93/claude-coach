@@ -1,22 +1,9 @@
-# Cycling Coach — publish-safe compose.
-#
-# SAFE TO COMMIT: this file contains no secrets. Every credential is read from
-# the environment (./.env, which is gitignored) with empty defaults, so a
-# checkout has nothing sensitive in it. See .env.example for what to set.
-#
-# Quick start:
-#   cp .env.example .env        # then fill in STRAVA_MCP_URL etc.
-#   docker compose build
-#   docker compose run --rm coach claude setup-token   # one-time auth
-#   docker compose up -d
-
 services:
   coach:
-    build: .
-    image: cycling-coach:latest
+    build: . # remove if deploying this compose
+    image: luben93/cycling-coach:latest
     container_name: cycling-coach
     restart: unless-stopped
-
     # The container runs as a non-root user (uid 10001, set in the Dockerfile).
     # This is REQUIRED — the Claude CLI refuses headless operation as root.
 
@@ -25,14 +12,12 @@ services:
       # interfaces, e.g.  "192.168.1.10:8080:8080". The default below publishes on
       # all host interfaces — fine on a trusted LAN, but firewall port 8080 and
       # never port-forward it to the internet (there is no app-level auth).
-      - "${COACH_BIND:-8080}:8080"
-
+      - ${COACH_BIND:-8080}:8080
     volumes:
       # All persistent + secret state lives here and is gitignored: the
       # subscription OAuth token, the Strava token, the coach's memory (the
       # athlete's private training journey), generated GPX routes, the snapshot.
-      - ./data:/data
-
+      - coach:/data
     environment:
       # Remote Strava MCP. Set in .env (or write the token to ./data/strava_token).
       STRAVA_MCP_URL: ${STRAVA_MCP_URL:-}
@@ -43,14 +28,22 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       COACH_SYNC_INTERVAL: ${COACH_SYNC_INTERVAL:-3600}
       COACH_MODEL: ${COACH_MODEL:-}
-
     # Hardening for a published image.
     security_opt:
       - no-new-privileges:true
-
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/health',timeout=5).status==200 else 1)"]
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if
+          urllib.request.urlopen('http://localhost:8080/api/health',timeout=5).status==200
+          else 1)
       interval: 60s
       timeout: 10s
       retries: 3
       start_period: 20s
+networks: {}
+volumes:
+  coach: null
+
