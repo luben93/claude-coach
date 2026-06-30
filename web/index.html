@@ -70,10 +70,16 @@
   .md-body em { font-style:italic; }
   .md-body hr { border:none; border-top:1px solid var(--line); margin:0.8em 0; }
   .md-body blockquote { border-left:3px solid var(--amber); margin:0 0 0.7em; padding-left:0.8em; color:var(--dim); }
-  /* plan box */
+  /* week plan box */
   .plan-card { display:none; }
   .plan-card.has-plan { display:block; }
   .plan-ts { font-size:11px; color:var(--faint); margin-bottom:12px; }
+  .plan-empty { font-size:13px; color:var(--faint); padding:12px 0; }
+  /* responsive table inside plan */
+  .md-body table { width:100%; border-collapse:collapse; font-size:13px; overflow-x:auto; display:block; }
+  .md-body th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); color:var(--faint); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.07em; }
+  .md-body td { padding:6px 8px; border-bottom:1px solid rgba(45,55,68,0.5); vertical-align:top; }
+  .md-body tr:last-child td { border-bottom:none; }
   /* route builder */
   .composer { display:flex; gap:8px; margin-top:14px; }
   .composer textarea { flex:1; resize:none; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:10px 12px; font:inherit; font-size:14px; height:46px; }
@@ -94,6 +100,12 @@
   .route-item:last-child { border-bottom:none; }
   .route-item a { color:var(--amber); text-decoration:none; font-weight:600; }
   .route-item .fname { color:var(--dim); word-break:break-all; }
+  .wahoo-plan { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .wahoo-plan:last-child { border-bottom:none; }
+  .wahoo-plan .wname { font-weight:600; font-size:14px; }
+  .wahoo-plan .wmeta { font-size:12px; color:var(--faint); margin-top:2px; }
+  .wahoo-plan button { flex-shrink:0; background:none; border:1px solid var(--amber); color:var(--amber); border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; font-weight:600; }
+  .wahoo-plan button:disabled { opacity:0.5; cursor:default; }
 </style>
 </head>
 <body>
@@ -123,6 +135,14 @@
           <div class="stat"><div class="v" id="s-climb">–</div><div class="l">m climbed (14d)</div></div>
         </div>
         <div id="rides"><div class="empty">Loading rides…</div></div>
+      </section>
+
+      <section class="card" id="wahoo-card">
+        <h2>Wahoo Plans</h2>
+        <div id="wahoo-banner" class="onboard" style="display:none;margin-bottom:10px;">
+          <b>WAHOO_ACCESS_TOKEN</b> not set — add it to your .env to push workouts to your ELEMNT.
+        </div>
+        <div id="wahoo-list"></div>
       </section>
 
       <section class="card">
@@ -155,7 +175,7 @@
       </section>
 
       <section class="card plan-card" id="plan-card">
-        <h2>Latest plan</h2>
+        <h2>Week ahead</h2>
         <div class="plan-ts" id="plan-ts"></div>
         <div class="md-body" id="plan-body"></div>
       </section>
@@ -254,14 +274,14 @@ async function loadDashboard() {
 
 async function loadPlan() {
   try {
-    const r = await fetch("/api/last-reply");
+    const r = await fetch("/api/week-plan");
     if (!r.ok) return;
     const d = await r.json();
     if (!d.text) return;
     const card = document.getElementById("plan-card");
     card.classList.add("has-plan");
     document.getElementById("plan-ts").textContent =
-      d.saved_at ? "From " + new Date(d.saved_at).toLocaleString() : "";
+      d.updated_at ? "Updated " + new Date(d.updated_at).toLocaleString() : "";
     document.getElementById("plan-body").innerHTML = renderMd(d.text);
   } catch {}
 }
@@ -276,6 +296,38 @@ async function loadRoutes() {
       box.appendChild(el);
     }
   } catch {}
+}
+
+// --- wahoo plans ------------------------------------------------------------
+async function loadWahooPlans() {
+  try {
+    const r = await fetch("/api/wahoo/plans"); const d = await r.json();
+    document.getElementById("wahoo-banner").style.display = d.configured ? "none" : "block";
+    const box = document.getElementById("wahoo-list"); box.innerHTML = "";
+    if (!d.plans || !d.plans.length) {
+      box.innerHTML = '<div class="empty">No plans pushed yet — ask your coach to create a Wahoo workout.</div>';
+      return;
+    }
+    for (const p of d.plans) {
+      const el = document.createElement("div"); el.className = "wahoo-plan";
+      const dt = p.scheduled_for ? new Date(p.scheduled_for).toLocaleString(undefined, {weekday:"short",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "—";
+      el.innerHTML = `<div><div class="wname">${p.name || p.filename}</div><div class="wmeta">${dt} · ${p.duration_minutes} min · ${p.location}</div></div>
+        <button onclick="repushWahooPlan('${p.external_id}', this)">Resend</button>`;
+      box.appendChild(el);
+    }
+  } catch {}
+}
+
+async function repushWahooPlan(externalId, btn) {
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await fetch(`/api/wahoo/push/${encodeURIComponent(externalId)}`, {
+      method: "PUT", headers: {"Content-Type": "application/json"}, body: "{}",
+    });
+    const d = await r.json();
+    btn.textContent = d.ok ? "Sent ✓" : "Failed";
+    if (!d.ok) { setTimeout(() => { btn.disabled = false; btn.textContent = "Resend"; }, 2000); }
+  } catch (e) { btn.disabled = false; btn.textContent = "Resend"; }
 }
 
 // --- route builder ----------------------------------------------------------
@@ -384,6 +436,7 @@ input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) {
   loadDashboard();
   loadRoutes();
   loadPlan();
+  loadWahooPlans();
 })();
 setInterval(loadDashboard, 60000);
 </script>

@@ -27,6 +27,7 @@ services:
       # Subscription OAuth token from `claude setup-token`
       # (or persist it at /data/claude-home/oauth_token on the volume).
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      WAHOO_ACCESS_TOKEN: ${WAHOO_ACCESS_TOKEN:-}
       COACH_SYNC_INTERVAL: ${COACH_SYNC_INTERVAL:-3600}
       COACH_MODEL: ${COACH_MODEL:-}
       COACH_LOG_LEVEL: ${COACH_LOG_LEVEL:-INFO}

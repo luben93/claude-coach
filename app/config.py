@@ -69,6 +69,16 @@ def strava_configured() -> bool:
 PUBLIC_BASE_URL = os.environ.get("COACH_PUBLIC_URL", f"http://localhost:{os.environ.get('COACH_PORT','8080')}")
 
 
+# --- Wahoo -----------------------------------------------------------------
+def wahoo_access_token() -> str | None:
+    v = os.environ.get("WAHOO_ACCESS_TOKEN", "").strip()
+    return v or None
+
+
+def wahoo_configured() -> bool:
+    return bool(wahoo_access_token())
+
+
 # --- Onboarding ------------------------------------------------------------
 def is_onboarded() -> bool:
     """The coach has met the athlete once goal.md exists in memory."""

@@ -12,6 +12,9 @@ LAN-only by intent; no UI auth. Endpoints:
   POST /api/route              -> generate a GPX via brouter (manual panel)
   GET  /api/routes             -> list generated GPX files
   GET  /api/routes/{name}      -> download a GPX file
+  POST /api/wahoo/push         -> create Wahoo plan + schedule workout on ELEMNT
+  GET  /api/wahoo/plans        -> list locally saved Wahoo plans
+  PUT  /api/wahoo/push/{id}    -> re-upload plan + reschedule workout
 """
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from . import coach, config, routes, strava, sync
+from . import coach, config, routes, strava, sync, wahoo
 from .snapshot import read_snapshot
 
 # Logging: explicit level (override with COACH_LOG_LEVEL), timestamped, named.
@@ -90,6 +93,7 @@ async def health() -> JSONResponse:
         "authenticated": bool(config.claude_oauth_token()),
         "strava_configured": config.strava_configured(),
         "strava_connected": strava.is_connected(),
+        "wahoo_configured": config.wahoo_configured(),
         "onboarded": config.is_onboarded(),
         "snapshot": config.SNAPSHOT_PATH.exists(),
     })
@@ -159,6 +163,20 @@ async def last_reply() -> JSONResponse:
         return JSONResponse({"error": "unreadable"}, status_code=500)
 
 
+@app.get("/api/week-plan")
+async def week_plan() -> JSONResponse:
+    path = config.MEMORY_DIR / "week_plan.md"
+    if not path.exists():
+        return JSONResponse({"error": "no plan yet"}, status_code=404)
+    try:
+        text = path.read_text()
+        stat = path.stat()
+        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        return JSONResponse({"text": text, "updated_at": updated_at})
+    except Exception:
+        return JSONResponse({"error": "unreadable"}, status_code=500)
+
+
 @app.post("/api/sync")
 async def trigger_sync() -> JSONResponse:
     return JSONResponse(await sync.run_once())
@@ -223,6 +241,109 @@ async def download_route(name: str) -> FileResponse:
     if routes_dir not in path.parents or not path.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(path, media_type="application/gpx+xml", filename=safe)
+
+
+@app.post("/api/wahoo/push")
+async def wahoo_push(req: Request) -> JSONResponse:
+    body = await req.json()
+    plan = body.get("plan")
+    filename = (body.get("filename") or "workout.json").strip()
+    scheduled_for = (body.get("scheduled_for") or "").strip()
+    duration_minutes = int(body.get("duration_minutes") or 60)
+    location = (body.get("location") or "indoor").strip()
+
+    if not plan:
+        return JSONResponse({"ok": False, "error": "plan required"}, status_code=400)
+    if not scheduled_for:
+        return JSONResponse({"ok": False, "error": "scheduled_for required"}, status_code=400)
+    if not config.wahoo_configured():
+        return JSONResponse(
+            {"ok": False, "error": "Wahoo not configured — set WAHOO_ACCESS_TOKEN"},
+            status_code=503,
+        )
+
+    now = datetime.now(timezone.utc)
+    external_id = now.strftime("CC-%Y%m%d-%H%M%S")
+    plan_name = (plan.get("header") or {}).get("name") or filename.replace(".json", "")
+
+    try:
+        wahoo_plan = await asyncio.to_thread(
+            wahoo.upload_plan, plan, filename, external_id
+        )
+        wahoo_plan_id = wahoo_plan["id"]
+        wahoo_workout = await asyncio.to_thread(
+            wahoo.schedule_workout,
+            wahoo_plan_id, plan_name, scheduled_for,
+            duration_minutes, location, external_id,
+        )
+        wahoo_workout_id = wahoo_workout["id"]
+    except wahoo.WahooError as e:
+        log.warning("wahoo push failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)})
+
+    meta = {
+        "external_id": external_id,
+        "wahoo_plan_id": wahoo_plan_id,
+        "wahoo_workout_id": wahoo_workout_id,
+        "filename": filename,
+        "name": plan_name,
+        "uploaded_at": now.isoformat(),
+        "scheduled_for": scheduled_for,
+        "duration_minutes": duration_minutes,
+        "location": location,
+    }
+    wahoo.save_local(external_id, meta, plan)
+    return JSONResponse({
+        "ok": True,
+        "external_id": external_id,
+        "wahoo_plan_id": wahoo_plan_id,
+        "wahoo_workout_id": wahoo_workout_id,
+        "name": plan_name,
+    })
+
+
+@app.get("/api/wahoo/plans")
+async def wahoo_list_plans() -> JSONResponse:
+    return JSONResponse({
+        "plans": wahoo.list_local(),
+        "configured": config.wahoo_configured(),
+    })
+
+
+@app.put("/api/wahoo/push/{external_id}")
+async def wahoo_update(external_id: str, req: Request) -> JSONResponse:
+    safe = Path(external_id).name  # no traversal
+    data = wahoo.load_local(safe)
+    if not data:
+        return JSONResponse({"ok": False, "error": "plan not found"}, status_code=404)
+    if not config.wahoo_configured():
+        return JSONResponse(
+            {"ok": False, "error": "Wahoo not configured — set WAHOO_ACCESS_TOKEN"},
+            status_code=503,
+        )
+    body = await req.json()
+    plan = body.get("plan") or data["plan"]
+    meta = data["meta"]
+    scheduled_for = body.get("scheduled_for") or meta["scheduled_for"]
+    duration_minutes = int(body.get("duration_minutes") or meta["duration_minutes"])
+    try:
+        await asyncio.to_thread(
+            wahoo.update_plan, meta["wahoo_plan_id"], plan, meta["filename"]
+        )
+        await asyncio.to_thread(
+            wahoo.update_workout, meta["wahoo_workout_id"], scheduled_for, duration_minutes
+        )
+    except wahoo.WahooError as e:
+        log.warning("wahoo update failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)})
+
+    meta.update({
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "scheduled_for": scheduled_for,
+        "duration_minutes": duration_minutes,
+    })
+    wahoo.save_local(safe, meta, plan)
+    return JSONResponse({"ok": True})
 
 
 def _sse(obj: dict) -> str:
