@@ -2,8 +2,8 @@
 #
 # Python runs the FastAPI server + Agent SDK. Node is here ONLY so you can run
 # `claude setup-token` inside the container to mint a subscription OAuth token
-# (the SDK itself is pure Python and the Strava MCP is remote, so nothing else
-# needs Node at runtime).
+# (the SDK itself is pure Python, and Strava/Wahoo are plain REST + OAuth clients,
+# so nothing else needs Node at runtime).
 FROM python:3.12-slim
 
 # --- Node + Claude Code CLI (for `claude setup-token` only) ----------------

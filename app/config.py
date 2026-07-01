@@ -21,8 +21,9 @@ MEMORY_DIR = Path(os.environ.get("COACH_MEMORY_DIR", str(DATA_DIR / "memory")))
 # Dashboard snapshot (sync job writes, dashboard reads).
 SNAPSHOT_PATH = DATA_DIR / "snapshot.json"
 
-# Last coach reply (chat endpoint writes, dashboard plan box reads).
-LAST_REPLY_PATH = DATA_DIR / "last_reply.json"
+# The athlete's standing week-ahead plan — a Markdown file the coach maintains
+# in its memory dir and the dashboard renders. Source of truth for the plan card.
+WEEK_PLAN_PATH = MEMORY_DIR / "week_plan.md"
 
 # Bundled brouter script (copied into the image).
 BROUTER_SCRIPT = os.environ.get("BROUTER_SCRIPT", "/srv/brouter/fetch_route.sh")
@@ -66,17 +67,24 @@ def strava_configured() -> bool:
 # Public base URL the athlete's browser can reach this app at, for the OAuth
 # redirect. Strava requires the callback host to match the app's Authorization
 # Callback Domain. Defaults to localhost for local testing.
-PUBLIC_BASE_URL = os.environ.get("COACH_PUBLIC_URL", f"http://localhost:{os.environ.get('COACH_PORT','8080')}")
+PUBLIC_BASE_URL = os.environ.get("COACH_PUBLIC_URL", "http://truenas.local:8080")
 
 
-# --- Wahoo -----------------------------------------------------------------
-def wahoo_access_token() -> str | None:
-    v = os.environ.get("WAHOO_ACCESS_TOKEN", "").strip()
+# --- Wahoo OAuth -----------------------------------------------------------
+# Same shape as Strava: client id/secret obtain & refresh per-athlete tokens
+# via /api/wahoo/connect; tokens persist on the volume and auto-refresh.
+def wahoo_client_id() -> str | None:
+    v = os.environ.get("WAHOO_CLIENT_ID", "").strip()
+    return v or None
+
+
+def wahoo_client_secret() -> str | None:
+    v = os.environ.get("WAHOO_CLIENT_SECRET", "").strip()
     return v or None
 
 
 def wahoo_configured() -> bool:
-    return bool(wahoo_access_token())
+    return bool(wahoo_client_id() and wahoo_client_secret())
 
 
 # --- Onboarding ------------------------------------------------------------

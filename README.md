@@ -1,16 +1,21 @@
 # Cycling Coach — self-hosted, single athlete
 
 A LAN-only web app: a personal cycling coach that **learns you**, tracks your
-training journey, pulls your live **Strava** data, and plans **bike routes** with
-brouter. Runs on the **Claude Agent SDK** using your **Claude subscription**
-(no per-token API billing). Generic and publishable — nothing about any athlete
-is baked in; the coach interviews you on first run and remembers everything after.
+training journey, pulls your live **Strava** data, maintains a **standing
+week-ahead plan** on the dashboard, pushes structured workouts to your **Wahoo**
+ELEMNT, and plans **bike routes** with brouter. Runs on the **Claude Agent SDK**
+using your **Claude subscription** (no per-token API billing). Generic and
+publishable — nothing about any athlete is baked in; the coach interviews you on
+first run and remembers everything after.
+
+Strava and Wahoo both use the same one-time OAuth connect flow (authorize once,
+tokens persist on the volume and auto-refresh).
 
 Single athlete per deployment (no multi-tenant).
 
 ```
 coach-app/
-  app/        FastAPI server, Agent SDK coach, Strava sync, brouter routes
+  app/        FastAPI server, Agent SDK coach, Strava + Wahoo OAuth, brouter routes
   web/        dashboard + chat + route builder (single static page)
   brouter/    bundled GPX routing script
   data/       (mounted) credentials, the coach's memory, snapshot, routes — persists
@@ -32,18 +37,37 @@ coach-app/
   new leave memory untouched.
 - **Dashboard** reads a cached Strava snapshot (fast). A **background sync** pulls
   recent rides on an interval and rewrites the snapshot.
+- **Week ahead** — the coach maintains `week_plan.md` (a standing, athlete-facing
+  training week) and the dashboard renders it. It's distinct from the chat: the
+  card shows your *current plan*, updated when the plan changes — not your last
+  message. Ask "plan my week" to (re)generate it.
+- **Wahoo workouts** — ask the coach to build a structured session and it pushes
+  the plan to your ELEMNT (appears when scheduled within 6 days).
 - **Routes** — ask the coach in chat ("give me a quiet 2h ride from home"), or use
   the manual **Plan a route** panel. GPX files save to the volume and download
   from the dashboard.
 
 ## One-time setup
 
-### 1. Configure the Strava MCP
-Copy `.env.example` to `.env` and set your remote MCP URL + bearer:
+### 1. Register Strava + Wahoo apps and configure `.env`
+Copy `.env.example` to `.env`. Both integrations use OAuth — create a developer
+app for each and copy its client id/secret:
+- Strava: https://www.strava.com/settings/api
+- Wahoo: https://developers.wahooligan.com
+
+Set the public URL the athlete's browser reaches this app at — it must match the
+callback/redirect registered in **both** apps:
 ```
-STRAVA_MCP_URL=https://your-strava-mcp/mcp
-STRAVA_MCP_TOKEN=...        # or write the token to ./data/strava_token
+COACH_PUBLIC_URL=http://truenas.local:8080      # default; the OAuth callback host
+
+STRAVA_CLIENT_ID=...
+STRAVA_CLIENT_SECRET=...
+WAHOO_CLIENT_ID=...
+WAHOO_CLIENT_SECRET=...
 ```
+Register the callbacks as:
+- Strava "Authorization Callback Domain": `truenas.local` (host only)
+- Wahoo "Redirect URI": `http://truenas.local:8080/api/wahoo/callback`
 
 ### 2. Create the data dir (writable by the container user)
 The container runs as a non-root user (uid 10001) — required, because the Claude
@@ -69,20 +93,27 @@ echo '<the-token>' > ./data/claude-home/oauth_token
 ```
 (or paste into `CLAUDE_CODE_OAUTH_TOKEN` in `.env`). Survives restarts (~1 yr).
 
-### 5. Run
+### 5. Run + connect
 ```
 docker compose up -d
 ```
-Open `http://<your-server-lan-ip>:8080` and say hello — the coach takes it
-from there.
+Open `http://truenas.local:8080` and say hello — the coach takes it from there.
+The dashboard shows **Connect Strava** / **Connect Wahoo** banners; click each
+once to authorize (or visit `/api/strava/connect` and `/api/wahoo/connect`).
+Tokens persist on the volume and refresh automatically.
 
 ## Verify
 ```
 curl http://localhost:8080/api/health
-# {"ok":true,"sdk":true,"authenticated":true,"strava_mcp":true,"onboarded":false,...}
+# {"ok":true,"sdk":true,"authenticated":true,
+#  "strava_configured":true,"strava_connected":true,
+#  "wahoo_configured":true,"wahoo_connected":true,"onboarded":false,...}
 ```
 - `authenticated:false` → step 4 didn't land; check `./data/claude-home/oauth_token`.
-- `strava_mcp:false` → `STRAVA_MCP_URL` not set.
+- `strava_configured:false` / `wahoo_configured:false` → the app's client id/secret
+  aren't set in `.env`.
+- `*_connected:false` → app credentials are set but you haven't authorized yet;
+  click the connect banner (or hit `/api/<svc>/connect`).
 - `onboarded:false` → expected before your first chat; flips to true once the
   coach has written `goal.md`.
 - `FATAL: cannot create /data...` on startup → the `./data` dir isn't writable by

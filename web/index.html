@@ -125,6 +125,10 @@
     <b>Connect Strava</b> to pull in your rides. <a href="/api/strava/connect" style="color:var(--amber);font-weight:600">Authorize now →</a>
   </div>
 
+  <div id="wahoo-connect-banner" class="onboard" style="display:none">
+    <b>Connect Wahoo</b> to push workouts to your ELEMNT. <a href="/api/wahoo/connect" style="color:var(--amber);font-weight:600">Authorize now →</a>
+  </div>
+
   <div class="grid">
     <div class="col">
       <section class="card">
@@ -140,7 +144,7 @@
       <section class="card" id="wahoo-card">
         <h2>Wahoo Plans</h2>
         <div id="wahoo-banner" class="onboard" style="display:none;margin-bottom:10px;">
-          <b>WAHOO_ACCESS_TOKEN</b> not set — add it to your .env to push workouts to your ELEMNT.
+          Wahoo not connected — <a href="/api/wahoo/connect" style="color:var(--amber);font-weight:600">authorize now →</a>
         </div>
         <div id="wahoo-list"></div>
       </section>
@@ -239,6 +243,9 @@ async function loadStatus() {
     document.getElementById("goal-badge").textContent = onboarded ? "" : "Setup needed";
     document.getElementById("strava-banner").style.display =
       (h.strava_configured && !h.strava_connected) ? "block" : "none";
+    // Show connect banner only when the Wahoo app is configured but not yet authorized.
+    document.getElementById("wahoo-connect-banner").style.display =
+      (h.wahoo_configured && !h.wahoo_connected) ? "block" : "none";
   } catch {}
 }
 
@@ -273,16 +280,29 @@ async function loadDashboard() {
 }
 
 async function loadPlan() {
+  const card = document.getElementById("plan-card");
+  const ts = document.getElementById("plan-ts");
+  const bodyEl = document.getElementById("plan-body");
   try {
     const r = await fetch("/api/week-plan");
-    if (!r.ok) return;
-    const d = await r.json();
-    if (!d.text) return;
-    const card = document.getElementById("plan-card");
-    card.classList.add("has-plan");
-    document.getElementById("plan-ts").textContent =
-      d.updated_at ? "Updated " + new Date(d.updated_at).toLocaleString() : "";
-    document.getElementById("plan-body").innerHTML = renderMd(d.text);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.text) {
+        card.classList.add("has-plan");
+        ts.textContent = d.updated_at ? "Updated " + new Date(d.updated_at).toLocaleString() : "";
+        bodyEl.innerHTML = renderMd(d.text);
+        return;
+      }
+    }
+    // No plan file yet. Once onboarded, show the card with a prompt to build one
+    // (the coach writes week_plan.md on the next turn). Before onboarding, stay hidden.
+    if (onboarded) {
+      card.classList.add("has-plan");
+      ts.textContent = "";
+      bodyEl.innerHTML = '<div class="plan-empty">No week-ahead plan yet. Ask your coach in the chat — e.g. <em>"plan my week"</em> — and your training week will appear here.</div>';
+    } else {
+      card.classList.remove("has-plan");
+    }
   } catch {}
 }
 
@@ -302,7 +322,7 @@ async function loadRoutes() {
 async function loadWahooPlans() {
   try {
     const r = await fetch("/api/wahoo/plans"); const d = await r.json();
-    document.getElementById("wahoo-banner").style.display = d.configured ? "none" : "block";
+    document.getElementById("wahoo-banner").style.display = d.connected ? "none" : "block";
     const box = document.getElementById("wahoo-list"); box.innerHTML = "";
     if (!d.plans || !d.plans.length) {
       box.innerHTML = '<div class="empty">No plans pushed yet — ask your coach to create a Wahoo workout.</div>';

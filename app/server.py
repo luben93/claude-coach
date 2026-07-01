@@ -76,13 +76,17 @@ async def _startup() -> None:
     config.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     asyncio.create_task(sync.loop())
     log.info("coach up — data=%s memory=%s", config.DATA_DIR, config.MEMORY_DIR)
-    log.info("status — sdk=%s claude_auth=%s strava_configured=%s strava_connected=%s onboarded=%s",
+    log.info("public url=%s", config.PUBLIC_BASE_URL)
+    log.info("status — sdk=%s claude_auth=%s strava_configured=%s strava_connected=%s wahoo_configured=%s wahoo_connected=%s onboarded=%s",
              coach.SDK_AVAILABLE, bool(config.claude_oauth_token()),
-             config.strava_configured(), strava.is_connected(), config.is_onboarded())
+             config.strava_configured(), strava.is_connected(),
+             config.wahoo_configured(), wahoo.is_connected(), config.is_onboarded())
     if config.strava_configured() and not strava.is_connected():
         log.warning("Strava app configured but NOT authorized — visit /api/strava/connect once")
     if not config.strava_configured():
         log.warning("Strava client id/secret not set — no activity data will sync")
+    if config.wahoo_configured() and not wahoo.is_connected():
+        log.warning("Wahoo app configured but NOT authorized — visit /api/wahoo/connect once")
 
 
 @app.get("/api/health")
@@ -94,14 +98,19 @@ async def health() -> JSONResponse:
         "strava_configured": config.strava_configured(),
         "strava_connected": strava.is_connected(),
         "wahoo_configured": config.wahoo_configured(),
+        "wahoo_connected": wahoo.is_connected(),
         "onboarded": config.is_onboarded(),
         "snapshot": config.SNAPSHOT_PATH.exists(),
     })
 
 
-# --- Strava OAuth ----------------------------------------------------------
+# --- OAuth helpers ---------------------------------------------------------
 def _redirect_uri() -> str:
     return config.PUBLIC_BASE_URL.rstrip("/") + "/api/strava/callback"
+
+
+def _wahoo_redirect_uri() -> str:
+    return config.PUBLIC_BASE_URL.rstrip("/") + "/api/wahoo/callback"
 
 
 @app.get("/api/strava/connect")
@@ -130,6 +139,30 @@ async def strava_callback(code: str = "", error: str = "") -> RedirectResponse:
     return RedirectResponse("/?strava=connected")
 
 
+@app.get("/api/wahoo/connect")
+async def wahoo_connect() -> RedirectResponse:
+    if not config.wahoo_configured():
+        return JSONResponse({"error": "Wahoo client id/secret not configured"}, status_code=400)
+    url = wahoo.authorize_url(_wahoo_redirect_uri())
+    log.info("redirecting athlete to Wahoo authorization")
+    return RedirectResponse(url)
+
+
+@app.get("/api/wahoo/callback")
+async def wahoo_callback(code: str = "", error: str = "") -> RedirectResponse:
+    if error:
+        log.warning("Wahoo authorization denied: %s", error)
+        return RedirectResponse("/?wahoo=denied")
+    if not code:
+        return RedirectResponse("/?wahoo=missing_code")
+    try:
+        await asyncio.to_thread(wahoo.exchange_code, code, _wahoo_redirect_uri())
+    except wahoo.WahooError as e:
+        log.error("Wahoo code exchange failed: %s", e)
+        return RedirectResponse("/?wahoo=error")
+    return RedirectResponse("/?wahoo=connected")
+
+
 @app.get("/api/onboarding")
 async def onboarding() -> JSONResponse:
     return JSONResponse({"onboarded": config.is_onboarded()})
@@ -143,35 +176,16 @@ async def snapshot() -> JSONResponse:
     return JSONResponse(snap)
 
 
-def _save_last_reply(text: str) -> None:
-    try:
-        payload = {"text": text, "saved_at": datetime.now(timezone.utc).isoformat()}
-        tmp = config.LAST_REPLY_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload))
-        tmp.replace(config.LAST_REPLY_PATH)
-    except Exception:
-        log.exception("failed to save last reply")
-
-
-@app.get("/api/last-reply")
-async def last_reply() -> JSONResponse:
-    if not config.LAST_REPLY_PATH.exists():
-        return JSONResponse({"error": "no reply yet"}, status_code=404)
-    try:
-        return JSONResponse(json.loads(config.LAST_REPLY_PATH.read_text()))
-    except Exception:
-        return JSONResponse({"error": "unreadable"}, status_code=500)
-
-
 @app.get("/api/week-plan")
 async def week_plan() -> JSONResponse:
-    path = config.MEMORY_DIR / "week_plan.md"
+    """The athlete's standing week-ahead plan — the coach's week_plan.md, rendered
+    on the dashboard. Distinct from chat: this is the current plan, not the last reply."""
+    path = config.WEEK_PLAN_PATH
     if not path.exists():
         return JSONResponse({"error": "no plan yet"}, status_code=404)
     try:
         text = path.read_text()
-        stat = path.stat()
-        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        updated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
         return JSONResponse({"text": text, "updated_at": updated_at})
     except Exception:
         return JSONResponse({"error": "unreadable"}, status_code=500)
@@ -193,16 +207,13 @@ async def chat(req: Request) -> StreamingResponse:
             yield _sse({"type": "error", "text": "empty message"})
             yield "data: [DONE]\n\n"
             return
-        acc = ""
         try:
             async for chunk in coach.stream_reply(message, history):
-                acc += chunk
                 yield _sse({"type": "text", "text": chunk})
         except Exception as e:
             yield _sse({"type": "error", "text": str(e)})
-        if acc:
-            _save_last_reply(acc)
-        # onboarding may have completed during this turn; signal the UI to refresh
+        # The coach may have written/updated week_plan.md or finished onboarding
+        # during this turn; signal the UI to refresh the plan card + status.
         yield _sse({"type": "status", "onboarded": config.is_onboarded()})
         yield "data: [DONE]\n\n"
 
@@ -256,9 +267,9 @@ async def wahoo_push(req: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "plan required"}, status_code=400)
     if not scheduled_for:
         return JSONResponse({"ok": False, "error": "scheduled_for required"}, status_code=400)
-    if not config.wahoo_configured():
+    if not wahoo.is_connected():
         return JSONResponse(
-            {"ok": False, "error": "Wahoo not configured — set WAHOO_ACCESS_TOKEN"},
+            {"ok": False, "error": "Wahoo not connected — visit /api/wahoo/connect"},
             status_code=503,
         )
 
@@ -307,6 +318,7 @@ async def wahoo_list_plans() -> JSONResponse:
     return JSONResponse({
         "plans": wahoo.list_local(),
         "configured": config.wahoo_configured(),
+        "connected": wahoo.is_connected(),
     })
 
 
@@ -316,9 +328,9 @@ async def wahoo_update(external_id: str, req: Request) -> JSONResponse:
     data = wahoo.load_local(safe)
     if not data:
         return JSONResponse({"ok": False, "error": "plan not found"}, status_code=404)
-    if not config.wahoo_configured():
+    if not wahoo.is_connected():
         return JSONResponse(
-            {"ok": False, "error": "Wahoo not configured — set WAHOO_ACCESS_TOKEN"},
+            {"ok": False, "error": "Wahoo not connected — visit /api/wahoo/connect"},
             status_code=503,
         )
     body = await req.json()

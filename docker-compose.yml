@@ -1,6 +1,6 @@
 services:
   coach:
-    build: . # remove if deploying this compose
+    build: . # remove if deploying with the pre-built image
     image: luben93/cycling-coach:latest
     container_name: cycling-coach
     restart: unless-stopped
@@ -19,18 +19,21 @@ services:
       # athlete's private training journey), generated GPX routes, the snapshot.
       - coach:/data
     environment:
-      # Strava API app credentials (REST + OAuth). Set in .env.
+      # Strava OAuth app credentials (REST client + OAuth). Set in .env.
       STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID:-}
       STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET:-}
-      # Public URL for the OAuth redirect (must match Strava app callback domain).
-      COACH_PUBLIC_URL: ${COACH_PUBLIC_URL:-http://localhost:8080}
+      # Wahoo OAuth app credentials — same flow as Strava: connect once at
+      # /api/wahoo/connect, tokens persist on the volume and auto-refresh.
+      WAHOO_CLIENT_ID: ${WAHOO_CLIENT_ID:-}
+      WAHOO_CLIENT_SECRET: ${WAHOO_CLIENT_SECRET:-}
       # Subscription OAuth token from `claude setup-token`
       # (or persist it at /data/claude-home/oauth_token on the volume).
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-      WAHOO_ACCESS_TOKEN: ${WAHOO_ACCESS_TOKEN:-}
+      # Public URL for OAuth redirects — must match the callback domains registered
+      # in both the Strava and Wahoo app settings. Defaults to truenas.local:8080.
+      COACH_PUBLIC_URL: ${COACH_PUBLIC_URL:-http://truenas.local:8080}
       COACH_SYNC_INTERVAL: ${COACH_SYNC_INTERVAL:-3600}
       COACH_MODEL: ${COACH_MODEL:-}
-      COACH_LOG_LEVEL: ${COACH_LOG_LEVEL:-INFO}
     # Live-reload for development: `docker compose watch`.
     # Inert during a normal `up` — only the `watch` command acts on this.
     # Pairs with docker-compose.override.yml (adds uvicorn --reload) so synced
@@ -68,4 +71,3 @@ services:
 networks: {}
 volumes:
   coach: null
-
