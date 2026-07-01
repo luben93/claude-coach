@@ -33,10 +33,13 @@ log = logging.getLogger("coach.wahoo")
 API_BASE   = "https://api.wahooligan.com"
 AUTH_URL   = f"{API_BASE}/oauth/authorize"
 TOKEN_URL  = f"{API_BASE}/oauth/token"
-# offline_data is included so the authorization_code grant reliably returns a
-# refresh_token — without long-lived refresh, the access token dies after ~2h
-# (the original 401). Over-permission cost is nil for a single-athlete app.
-SCOPE      = "workouts_read workouts_write plans_read plans_write offline_data"
+# Scope notes:
+#  - user_read is REQUIRED: Wahoo returns 403 on API calls (e.g. POST /v1/workouts)
+#    when it's absent, even if workouts_write is present.
+#  - offline_data makes the authorization_code grant reliably return a refresh_token,
+#    so the access token can be renewed past its ~2h life (the original 401).
+# Over-permission cost is nil for a single-athlete app.
+SCOPE      = "user_read workouts_read workouts_write plans_read plans_write offline_data"
 
 TOKENS_PATH = config.DATA_DIR / "wahoo_tokens.json"
 PLANS_DIR   = config.DATA_DIR / "wahoo_plans"
@@ -88,6 +91,24 @@ def authorize_url(redirect_uri: str) -> str:
     return f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 
 
+def _error_detail(e: urllib.error.HTTPError) -> str:
+    """Readable failure detail: response body PLUS the headers that carry the real
+    reason when the body is empty. OAuth scope/permission failures (e.g. the 403 on
+    POST /v1/workouts without user_read) put `error="insufficient_scope"` in the
+    WWW-Authenticate header, not the body — so we always surface that."""
+    try:
+        body = e.read().decode(errors="replace").strip()
+    except Exception:
+        body = ""
+    parts: list[str] = []
+    if body:
+        parts.append(body[:1000])
+    www = e.headers.get("WWW-Authenticate") if e.headers else None
+    if www:
+        parts.append(f"WWW-Authenticate: {www}")
+    return " | ".join(parts) if parts else "(empty response body)"
+
+
 def _post_token(payload: dict[str, str]) -> dict[str, Any]:
     cid    = config.wahoo_client_id()
     secret = config.wahoo_client_secret()
@@ -104,10 +125,10 @@ def _post_token(payload: dict[str, str]) -> dict[str, Any]:
             tok["expires_at"] = int(time.time()) + int(tok["expires_in"])
         return tok
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")[:300]
-        log.error("wahoo token endpoint %s failed: HTTP %s %s",
+        detail = _error_detail(e)
+        log.error("wahoo token endpoint %s failed: HTTP %s — %s",
                   payload.get("grant_type"), e.code, detail)
-        raise WahooError(f"token request failed (HTTP {e.code})") from e
+        raise WahooError(f"token request failed (HTTP {e.code}): {detail}") from e
     except urllib.error.URLError as e:
         log.error("wahoo token endpoint unreachable: %s", e)
         raise WahooError("token endpoint unreachable") from e
@@ -164,8 +185,8 @@ def _request(method: str, path: str, fields: dict[str, str] | None = None) -> di
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")[:400]
-        log.error("wahoo %s %s failed: HTTP %s %s", method, path, e.code, detail)
+        detail = _error_detail(e)
+        log.error("wahoo %s %s failed: HTTP %s — %s", method, path, e.code, detail)
         raise WahooError(f"Wahoo API error (HTTP {e.code}): {detail}") from e
     except urllib.error.URLError as e:
         log.error("wahoo %s %s unreachable: %s", method, path, e)
