@@ -1,7 +1,9 @@
 services:
   coach:
-    build: . # remove if deploying with the pre-built image
-    image: luben93/cycling-coach:latest
+    # Pre-built image published by CI (.github/workflows/docker-publish.yml).
+    # Portainer/GitOps must pull, never build — the override file adds `build:`
+    # for local development only.
+    image: ghcr.io/luben93/claude-coach:latest
     container_name: cycling-coach
     restart: unless-stopped
     # The container runs as a non-root user (uid 10001, set in the Dockerfile).
@@ -34,25 +36,6 @@ services:
       COACH_PUBLIC_URL: ${COACH_PUBLIC_URL:-http://truenas.local:8080}
       COACH_SYNC_INTERVAL: ${COACH_SYNC_INTERVAL:-3600}
       COACH_MODEL: ${COACH_MODEL:-}
-    # Live-reload for development: `docker compose watch`.
-    # Inert during a normal `up` — only the `watch` command acts on this.
-    # Pairs with docker-compose.override.yml (adds uvicorn --reload) so synced
-    # code takes effect without a restart.
-    develop:
-      watch:
-        # App + UI changes are copied straight into the running container.
-        - action: sync
-          path: ./app
-          target: /srv/app
-        - action: sync
-          path: ./web
-          target: /srv/web
-        # Dependency or image changes require a rebuild.
-        - action: rebuild
-          path: ./requirements.txt
-        - action: rebuild
-          path: ./Dockerfile
-
     # Hardening for a published image.
     security_opt:
       - no-new-privileges:true
@@ -70,4 +53,6 @@ services:
       start_period: 20s
 networks: {}
 volumes:
-  coach: null
+  coach:
+    external: true
+    name: claude-coach_coach

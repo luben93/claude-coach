@@ -6,6 +6,26 @@
 # base file:  docker compose -f docker-compose.yml up -d
 services:
   coach:
+    # Build locally in development. The base file only references the pre-built
+    # CI image so that Portainer/GitOps pulls instead of building on the host.
+    build: .
+    # Live-reload for development: `docker compose watch`.
+    # Inert during a normal `up` — only the `watch` command acts on this.
+    # Synced code takes effect without a restart thanks to --reload below.
+    develop:
+      watch:
+        # App + UI changes are copied straight into the running container.
+        - action: sync
+          path: ./app
+          target: /srv/app
+        - action: sync
+          path: ./web
+          target: /srv/web
+        # Dependency or image changes require a rebuild.
+        - action: rebuild
+          path: ./requirements.txt
+        - action: rebuild
+          path: ./Dockerfile
     command:
       - uvicorn
       - app.server:app
