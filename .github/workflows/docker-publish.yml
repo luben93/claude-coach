@@ -10,6 +10,9 @@ on:
     branches: [ "main" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
+    # The docker-compose.yml bump below only ever lands via its own PR, so
+    # ignore it here to avoid that merge re-triggering another bump PR.
+    paths-ignore: [ 'docker-compose.yml' ]
   pull_request:
     branches: [ "main" ]
 
@@ -25,7 +28,8 @@ jobs:
 
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
       packages: write
       # This is used to complete the identity challenge
       # with sigstore/fulcio when running outside of PRs.
@@ -101,3 +105,47 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+      # Pin docker-compose.yml's image tag to the version that was just
+      # published, so Portainer/GitOps deploys that exact build instead of
+      # tracking the mutable `latest` tag. Opens a PR rather than pushing to
+      # main directly, so the bump still goes through review.
+      - name: Determine the tag to pin docker-compose.yml to
+        if: ${{ github.event_name == 'push' }}
+        id: pin
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "${REF_TYPE}" = "tag" ]; then
+            NEW_TAG=$(echo "${TAGS}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          else
+            NEW_TAG=$(echo "${TAGS}" | grep -oE 'sha-[0-9a-f]+$' | head -n1)
+          fi
+          if [ -z "${NEW_TAG}" ]; then
+            echo "Could not determine which tag to pin docker-compose.yml to" >&2
+            exit 1
+          fi
+
+          # Diff cleanly against main's tip regardless of which ref triggered
+          # this run (a version tag may not be main's current HEAD).
+          git fetch origin main --depth=1
+          git checkout -B main origin/main
+
+          sed -i -E "s#(image: ${IMAGE}:).*#\1${NEW_TAG}#" docker-compose.yml
+          echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Open a PR to pin docker-compose.yml
+        if: ${{ github.event_name == 'push' }}
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          commit-message: "chore: pin docker-compose image to ${{ steps.pin.outputs.new_tag }}"
+          title: "chore: pin docker-compose image to ${{ steps.pin.outputs.new_tag }}"
+          body: |
+            Automated update from `.github/workflows/docker-publish.yml` after
+            publishing `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.pin.outputs.new_tag }}`.
+          branch: bump-docker-compose-image
+          delete-branch: true
+          base: main
+          add-paths: docker-compose.yml
