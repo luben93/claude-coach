@@ -103,6 +103,12 @@ once to authorize (or visit `/api/strava/connect` and `/api/wahoo/connect`).
 Tokens persist on the volume and refresh automatically.
 
 ## Verify
+End-to-end smoke test against the real image (also runs in CI on every push):
+```
+bash scripts/smoke_test.sh          # builds the image, tests fault paths +
+                                    # chat stream resume/busy/restart recovery
+```
+Quick manual check:
 ```
 curl http://localhost:8080/api/health
 # {"ok":true,"sdk":true,"authenticated":true,

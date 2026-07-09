@@ -58,6 +58,24 @@ app = FastAPI(title="Cycling Coach")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    """Any bug in a handler becomes a JSON 500, never a dropped connection —
+    one failing endpoint must not look like a dead server to the UI."""
+    log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse({"error": f"internal error: {exc}"}, status_code=500)
+
+
+async def _json_body(req: Request) -> dict:
+    """Tolerant body parse — malformed/empty JSON becomes {} so endpoints
+    answer with their own clean 400s instead of a 500."""
+    try:
+        body = await req.json()
+        return body if isinstance(body, dict) else {}
+    except Exception:
+        return {}
+
+
 @app.middleware("http")
 async def access_log(request: Request, call_next):
     """Log every request with status + latency. API errors become visible here."""
@@ -211,7 +229,7 @@ async def chat_history() -> JSONResponse:
 
 @app.post("/api/chat/send")
 async def chat_send(req: Request) -> JSONResponse:
-    body = await req.json()
+    body = await _json_body(req)
     message = (body.get("message") or "").strip()
     if not message:
         return JSONResponse({"ok": False, "error": "empty message"}, status_code=400)
@@ -222,8 +240,14 @@ async def chat_send(req: Request) -> JSONResponse:
 @app.get("/api/chat/stream")
 async def chat_stream(turn_id: str = "", offset: int = 0) -> StreamingResponse:
     async def event_stream():
-        async for evt in chat.stream(turn_id, offset):
-            yield _sse(evt)
+        try:
+            async for evt in chat.stream(turn_id, offset):
+                yield _sse(evt)
+        except Exception as e:
+            # never die silently mid-stream — the client's retry loop handles it
+            log.exception("chat stream failed")
+            yield _sse({"type": "error", "text": f"stream failed: {e}"})
+            yield _sse({"type": "done"})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -273,7 +297,7 @@ async def strava_activity_streams(
 
 @app.post("/api/route")
 async def make_route(req: Request) -> JSONResponse:
-    body = await req.json()
+    body = await _json_body(req)
     start = (body.get("start") or "").strip()
     end = (body.get("end") or "").strip()
     profile = (body.get("profile") or "trekking").strip()
@@ -304,7 +328,7 @@ async def download_route(name: str) -> FileResponse:
 
 @app.post("/api/wahoo/push")
 async def wahoo_push(req: Request) -> JSONResponse:
-    body = await req.json()
+    body = await _json_body(req)
     plan = body.get("plan")
     filename = (body.get("filename") or "workout.json").strip()
     scheduled_for = (body.get("scheduled_for") or "").strip()
@@ -396,7 +420,7 @@ async def wahoo_update(external_id: str, req: Request) -> JSONResponse:
             {"ok": False, "error": "Wahoo not connected — visit /api/wahoo/connect"},
             status_code=503,
         )
-    body = await req.json()
+    body = await _json_body(req)
     plan = body.get("plan") or data["plan"]
     meta = data["meta"]
     scheduled_for = body.get("scheduled_for") or meta["scheduled_for"]

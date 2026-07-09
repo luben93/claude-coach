@@ -23,9 +23,17 @@ from . import coach, config
 log = logging.getLogger("coach.chat")
 
 HISTORY_PATH = config.DATA_DIR / "chat" / "history.json"
-MAX_MESSAGES = 200          # cap persisted history
 TURN_TIMEOUT = 15 * 60      # hard cap on one coach turn, seconds
 PING_INTERVAL = 15          # SSE keepalive so clients/proxies know we're alive
+
+# History compaction — a sliding window so a week of chatting can't grow the
+# file (or the page load) without bound. The coach's durable knowledge lives in
+# its memory files, NOT here; old chat turns are safe to drop.
+MAX_MESSAGES = 120          # newest messages kept
+MAX_MSG_CHARS = 16_000      # a single stored message is truncated beyond this
+MAX_TOTAL_CHARS = 120_000   # whole-history character budget
+MIN_KEEP = 8                # always keep at least the latest few messages
+MAX_TURN_CHARS = 300_000    # runaway-reply guard on the live turn buffer
 
 
 class Turn:
@@ -68,13 +76,30 @@ def _load() -> list[dict[str, str]]:
     return _messages
 
 
-def _persist() -> None:
-    msgs = _load()
+def _compact(msgs: list[dict[str, str]]) -> None:
+    """Sliding-window compaction: cap single-message size, message count, and
+    the total character budget (oldest dropped first)."""
+    for m in msgs:
+        if len(m.get("content") or "") > MAX_MSG_CHARS:
+            m["content"] = m["content"][:MAX_MSG_CHARS] + "\n\n…[truncated]"
     del msgs[:-MAX_MESSAGES]
-    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = HISTORY_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"messages": msgs}))
-    tmp.replace(HISTORY_PATH)
+    total = sum(len(m.get("content") or "") for m in msgs)
+    while len(msgs) > MIN_KEEP and total > MAX_TOTAL_CHARS:
+        total -= len(msgs.pop(0).get("content") or "")
+
+
+def _persist() -> None:
+    """Persist history; never raises — a full/readonly volume must not take
+    the chat down, it just loses durability until the disk recovers."""
+    msgs = _load()
+    _compact(msgs)
+    try:
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HISTORY_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"messages": msgs}))
+        tmp.replace(HISTORY_PATH)
+    except OSError as e:
+        log.error("could not persist chat history: %s", e)
 
 
 # --- public API ---------------------------------------------------------------
@@ -147,6 +172,10 @@ async def stream(turn_id: str, offset: int) -> AsyncIterator[dict[str, Any]]:
 async def _consume(turn: Turn, message: str, history: list[dict[str, str]]) -> None:
     async for chunk in coach.stream_reply(message, history):
         turn.text += chunk
+        if len(turn.text) > MAX_TURN_CHARS:
+            turn.text += "\n\n…[reply truncated — it exceeded the size limit]"
+            log.warning("chat turn %s truncated at %d chars", turn.id, len(turn.text))
+            break
         turn._wake()
 
 

@@ -554,12 +554,17 @@ async function readSSE(resp, onEvent) {
 
 // Follow one server-side turn to completion, reconnecting forever on failure.
 // `offset` is the server-reported character offset (opaque to us).
+let activeStream = null;   // AbortController of the in-flight stream fetch
+
 async function followTurn(turnId, offset, el, acc) {
   let attempt = 0;
   while (true) {
     let finished = false, gone = false;
+    const ctrl = new AbortController();
+    activeStream = ctrl;
     try {
-      const resp = await fetch(`/api/chat/stream?turn_id=${encodeURIComponent(turnId)}&offset=${offset}`);
+      const resp = await fetch(`/api/chat/stream?turn_id=${encodeURIComponent(turnId)}&offset=${offset}`,
+        { signal: ctrl.signal });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       turnLabel(el, "thinking…", false);
       attempt = 0;
@@ -579,6 +584,7 @@ async function followTurn(turnId, offset, el, acc) {
       if (finished) break;
       if (!gone) throw new Error("stream interrupted");
     } catch (e) { /* fall through to recovery below */ }
+    finally { if (activeStream === ctrl) activeStream = null; }
 
     // Connection dropped, or the server no longer knows this turn (restart).
     // Ask the server what actually happened before retrying.
@@ -597,10 +603,19 @@ async function followTurn(turnId, offset, el, acc) {
     turnLabel(el, "reconnecting…", true);
     await sleep(Math.min(1000 * 2 ** Math.min(attempt, 4), 8000));
   }
+  activeStream = null;
   turnFinish(el);
   setBusy(false);
   input.focus();
 }
+
+// Coming back from the background (or regaining network) often leaves a dead
+// socket that takes a long time to error out on its own — abort it so the
+// follow loop reconnects at the right offset immediately.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && activeStream) activeStream.abort();
+});
+window.addEventListener("online", () => { if (activeStream) activeStream.abort(); });
 
 async function ask() {
   const q = input.value.trim(); if (!q || sending) return;
