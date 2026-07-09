@@ -6,9 +6,16 @@ LAN-only by intent; no UI auth. Endpoints:
   GET  /api/onboarding         -> {onboarded: bool}
   GET  /api/snapshot           -> latest cached Strava snapshot
   POST /api/sync               -> trigger an immediate sync
-  POST /api/chat               -> SSE stream of the coach's reply
+  GET  /api/chat/history       -> persisted conversation + active turn state
+  POST /api/chat/send          -> start a coach turn (runs server-side)
+  GET  /api/chat/stream        -> SSE of a turn, resumable via ?offset=
+  POST /api/chat/clear         -> wipe the conversation
   GET  /api/strava/connect     -> redirect to Strava OAuth (one-time)
   GET  /api/strava/callback    -> OAuth redirect target; stores tokens
+  GET  /api/strava/activities  -> live recent-activity list (with ids)
+  GET  /api/strava/activity/{id}          -> full activity detail
+  GET  /api/strava/activity/{id}/streams  -> downsampled time-series streams
+  GET  /api/wahoo/workouts     -> Wahoo workout history (fallback ride data)
   POST /api/route              -> generate a GPX via brouter (manual panel)
   GET  /api/routes             -> list generated GPX files
   GET  /api/routes/{name}      -> download a GPX file
@@ -34,7 +41,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from . import coach, config, routes, strava, sync, wahoo
+from . import chat, coach, config, routes, strava, sync, wahoo
 from .snapshot import read_snapshot
 
 # Logging: explicit level (override with COACH_LOG_LEVEL), timestamped, named.
@@ -196,31 +203,72 @@ async def trigger_sync() -> JSONResponse:
     return JSONResponse(await sync.run_once())
 
 
-@app.post("/api/chat")
-async def chat(req: Request) -> StreamingResponse:
+# --- chat (server-side turns, resumable SSE) --------------------------------
+@app.get("/api/chat/history")
+async def chat_history() -> JSONResponse:
+    return JSONResponse(chat.state())
+
+
+@app.post("/api/chat/send")
+async def chat_send(req: Request) -> JSONResponse:
     body = await req.json()
     message = (body.get("message") or "").strip()
-    history = body.get("history") or []
+    if not message:
+        return JSONResponse({"ok": False, "error": "empty message"}, status_code=400)
+    result = await chat.send(message)
+    return JSONResponse(result, status_code=200 if result["ok"] else 409)
 
+
+@app.get("/api/chat/stream")
+async def chat_stream(turn_id: str = "", offset: int = 0) -> StreamingResponse:
     async def event_stream():
-        if not message:
-            yield _sse({"type": "error", "text": "empty message"})
-            yield "data: [DONE]\n\n"
-            return
-        try:
-            async for chunk in coach.stream_reply(message, history):
-                yield _sse({"type": "text", "text": chunk})
-        except Exception as e:
-            yield _sse({"type": "error", "text": str(e)})
-        # The coach may have written/updated week_plan.md or finished onboarding
-        # during this turn; signal the UI to refresh the plan card + status.
-        yield _sse({"type": "status", "onboarded": config.is_onboarded()})
+        async for evt in chat.stream(turn_id, offset):
+            yield _sse(evt)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/chat/clear")
+async def chat_clear() -> JSONResponse:
+    await chat.clear()
+    return JSONResponse({"ok": True})
+
+
+# --- Strava live data (used by the coach agent via curl, and debuggable) ----
+@app.get("/api/strava/activities")
+async def strava_activities(limit: int = 20) -> JSONResponse:
+    try:
+        acts = await asyncio.to_thread(strava.list_activities, max(1, min(limit, 50)))
+    except strava.StravaError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse({"activities": acts})
+
+
+@app.get("/api/strava/activity/{activity_id}")
+async def strava_activity(activity_id: str) -> JSONResponse:
+    try:
+        detail = await asyncio.to_thread(strava.get_activity, activity_id)
+    except strava.StravaError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse(detail)
+
+
+@app.get("/api/strava/activity/{activity_id}/streams")
+async def strava_activity_streams(
+    activity_id: str, keys: str = "", max_points: int = 400
+) -> JSONResponse:
+    try:
+        streams = await asyncio.to_thread(
+            strava.get_activity_streams, activity_id,
+            keys or None, max(10, min(max_points, 5000)),
+        )
+    except strava.StravaError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse(streams)
 
 
 @app.post("/api/route")
@@ -311,6 +359,21 @@ async def wahoo_push(req: Request) -> JSONResponse:
         "wahoo_workout_id": wahoo_workout_id,
         "name": plan_name,
     })
+
+
+@app.get("/api/wahoo/workouts")
+async def wahoo_workouts(page: int = 1, per_page: int = 30) -> JSONResponse:
+    """Wahoo workout history — fallback ride data when Strava is missing detail."""
+    if not wahoo.is_connected():
+        return JSONResponse(
+            {"error": "Wahoo not connected — visit /api/wahoo/connect"},
+            status_code=503,
+        )
+    try:
+        data = await asyncio.to_thread(wahoo.list_workouts, page, per_page)
+    except wahoo.WahooError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse(data if isinstance(data, dict) else {"workouts": data})
 
 
 @app.get("/api/wahoo/plans")

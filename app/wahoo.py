@@ -249,6 +249,14 @@ def schedule_workout(
     return result
 
 
+def list_workouts(page: int = 1, per_page: int = 30) -> dict[str, Any]:
+    """The athlete's Wahoo workout history (workouts_read scope). Completed
+    workouts carry a workout_summary with distance/duration/HR/power plus the
+    recorded FIT file URL — the fallback ride source when Strava lacks detail."""
+    qs = urllib.parse.urlencode({"page": page, "per_page": per_page})
+    return _request("GET", f"/v1/workouts?{qs}")
+
+
 def update_workout(wahoo_workout_id: int, starts: str, minutes: int) -> dict[str, Any]:
     """Reschedule an existing workout."""
     return _request("PUT", f"/v1/workouts/{wahoo_workout_id}", {

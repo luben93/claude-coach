@@ -91,6 +91,18 @@ Format:
 ## Live data
 Recent Strava activities are provided to you as context at the top of the conversation (pulled live from the Strava API). Use them when analyzing a ride or current fitness — don't rely on memory alone for recent training. If no activity data is present, it means Strava isn't connected yet; tell the athlete to connect it from the dashboard. Never trust Strava ESTIMATED power for bikes without a power meter — only power-meter data counts; note when you're unsure.
 
+## Full ride data — never stop at summaries
+The activity list in your context is only a summary. You have FULL access to every ride via the local API (Bash + curl) — never tell the athlete you can only see summary data:
+- Recent activities with ids:
+  `curl -s "http://localhost:{PORT}/api/strava/activities?limit=20"`
+- Complete detail for one ride (splits, laps, gear, calories, description):
+  `curl -s "http://localhost:{PORT}/api/strava/activity/<id>"`
+- Time-series streams — HR, power, cadence, speed, altitude over time/distance, evenly downsampled to fit your context:
+  `curl -s "http://localhost:{PORT}/api/strava/activity/<id>/streams"`
+  Optional: `?keys=heartrate,watts,time` to pick streams, `&max_points=N` (default 400) for resolution.
+When the athlete asks about a specific ride — intervals, pacing, HR drift, a climb, how an effort went — pull the detail and streams and analyze the actual data instead of guessing from averages. If Strava is ever missing a ride or its sensors, the athlete's Wahoo history usually recorded the same ride:
+  `curl -s "http://localhost:{PORT}/api/wahoo/workouts"` (completed workouts include a summary with distance/duration/HR/power and the FIT file URL).
+
 ## Routes
 You can generate bike GPX routes with brouter. When the athlete asks for a route, run the bundled script via bash:
   bash /srv/brouter/fetch_route.sh --start "<lon>,<lat>" --end "<lon>,<lat>" --profile <profile> --origin-label "<a>" --dest-label "<b>" --output-dir /data/routes
@@ -165,7 +177,7 @@ When the athlete asks you to create a workout and push it to Wahoo:
 2. Confirm before pushing: state the workout name, scheduled date and time, duration in minutes, and indoor vs outdoor
 3. On confirmation, call:
 ```
-curl -s -X POST http://localhost:8080/api/wahoo/push \
+curl -s -X POST http://localhost:{PORT}/api/wahoo/push \
   -H "Content-Type: application/json" \
   -d '{"plan":<plan_json>,"filename":"<slug>.json","scheduled_for":"<ISO datetime e.g. 2026-06-30T08:00:00>","duration_minutes":<N>,"location":"<indoor|outdoor>"}'
 ```
@@ -175,6 +187,9 @@ Note: plans only appear on the ELEMNT when scheduled within 6 days from now.
 
 ## Style
 Direct and practical — lead with the answer. Use the athlete's own units and real calendar dates. Frame advice around their stated goal. Coach principles apply (polarized base, progressive overload, recovery matters, specificity to the goal), but the numbers are always theirs."""
+
+# The prompt refers to the local API by port; bind it to the configured one.
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{PORT}", str(config.PORT))
 
 
 def _options(*, writable: bool = True) -> "ClaudeAgentOptions":
@@ -255,9 +270,12 @@ def _strava_context() -> str:
         return ("[Strava: connected app but no recent activities cached yet, or not "
                 "authorized. If the athlete asks about recent rides, tell them to "
                 "connect Strava from the dashboard.]\n\n")
-    lines = ["[Recent Strava activities — pulled from the athlete's account:]"]
+    lines = ["[Recent Strava activities (summaries) — full detail/streams for any "
+             "ride available via the local API, see 'Full ride data':]"]
     for r in snap["rides"][:10]:
         bits = [r.get("date") or "", r.get("name") or "ride"]
+        if r.get("id"):
+            bits.append(f"id={r['id']}")
         if r.get("distance_km") is not None:
             bits.append(f"{r['distance_km']:.1f}km")
         if r.get("elevation_m") is not None:
