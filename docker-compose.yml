@@ -3,7 +3,7 @@ services:
     # Pre-built image published by CI (.github/workflows/docker-publish.yml).
     # Portainer/GitOps must pull, never build — the override file adds `build:`
     # for local development only.
-    image: ghcr.io/luben93/claude-coach:latest
+    image: ghcr.io/luben93/claude-coach:sha-dd4e66c
     container_name: cycling-coach
     restart: unless-stopped
     # The container runs as a non-root user (uid 10001, set in the Dockerfile).
