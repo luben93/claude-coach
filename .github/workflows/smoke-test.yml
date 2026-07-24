@@ -1,0 +1,26 @@
+name: Smoke test
+
+# Builds the real image and runs scripts/smoke_test.sh against it: fault paths
+# with no credentials, then chat stream resume / busy / restart-recovery with a
+# slow fake coach mounted over app/coach.py.
+on:
+  push:
+    branches: [ "main", "claude/**" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t coach-smoke .
+
+      - name: Run smoke test
+        run: bash scripts/smoke_test.sh coach-smoke

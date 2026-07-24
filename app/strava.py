@@ -167,4 +167,34 @@ def list_activities(limit: int = 20) -> list[dict[str, Any]]:
 
 
 def get_activity(activity_id: int | str) -> dict[str, Any]:
+    """DetailedActivity — splits, laps, gear, calories, description, the lot.
+    Allowed by the activity:read_all scope we authorize with."""
     return _get(f"/activities/{activity_id}")
+
+
+# Streams the coach actually reasons about. latlng excluded by default (huge,
+# rarely useful for training analysis) but requestable via keys=.
+STREAM_DEFAULT_KEYS = ("time,distance,altitude,heartrate,watts,cadence,"
+                       "velocity_smooth,temp,moving")
+
+
+def get_activity_streams(
+    activity_id: int | str,
+    keys: str | None = None,
+    max_points: int = 400,
+) -> dict[str, Any]:
+    """Full time-series data for one activity, evenly downsampled so the whole
+    ride fits in an agent context (a 4h ride at 1Hz is ~14k points per stream).
+    Also allowed by activity:read_all — streams are not summary-only."""
+    raw = _get(f"/activities/{activity_id}/streams",
+               {"keys": keys or STREAM_DEFAULT_KEYS, "key_by_type": "true"})
+    out: dict[str, Any] = {}
+    for name, s in (raw or {}).items():
+        data = s.get("data") or []
+        n = len(data)
+        if max_points and n > max_points:
+            step = -(-n // max_points)  # ceil division
+            data = data[::step]
+        out[name] = {"data": data, "original_size": n,
+                     "downsampled": n > len(data)}
+    return out

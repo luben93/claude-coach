@@ -103,6 +103,12 @@ once to authorize (or visit `/api/strava/connect` and `/api/wahoo/connect`).
 Tokens persist on the volume and refresh automatically.
 
 ## Verify
+End-to-end smoke test against the real image (also runs in CI on every push):
+```
+bash scripts/smoke_test.sh          # builds the image, tests fault paths +
+                                    # chat stream resume/busy/restart recovery
+```
+Quick manual check:
 ```
 curl http://localhost:8080/api/health
 # {"ok":true,"sdk":true,"authenticated":true,
@@ -138,8 +144,18 @@ under `data/` or a real `.env`.
   coach for a new athlete.
 - **No UI auth** (LAN trust). Don't expose 8080 to the internet; if you must, put
   an authenticating reverse proxy in front.
-- Chat is **stateless per request** with history replayed as context. For longer/
-  cheaper continuity, switch `coach.stream_reply` to `ClaudeSDKClient` with a
-  persisted `session_id` (TODO in `coach.py`).
+- **Chat runs server-side.** A coach turn is a background task on the server;
+  the browser only attaches to a resumable SSE stream. Refreshing the page,
+  switching apps, or losing signal mid-reply doesn't kill the turn — the client
+  reconnects and picks the stream up at the offset it left off. History is
+  persisted on the volume (`/data/chat/history.json`), not in the browser.
+- **Full ride data**: the coach isn't limited to activity summaries — it pulls
+  complete Strava detail and time-series streams (HR/power/cadence/speed/
+  altitude) through the local API (`/api/strava/activity/{id}` and
+  `/api/strava/activity/{id}/streams`, both covered by the `activity:read_all`
+  scope), with the athlete's Wahoo workout history (`/api/wahoo/workouts`) as a
+  fallback ride source.
+- The **⚙︎ Actions** menu in the header exposes the manual API operations:
+  sync now, (re)authorize Strava/Wahoo, health check, refresh, clear chat.
 - Strava estimated power for bikes without a meter is treated as unreliable by the
   coach.
