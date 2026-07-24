@@ -138,6 +138,11 @@ jobs:
 
       - name: Open a PR to pin docker-compose.yml
         if: ${{ github.event_name == 'push' }}
+        # Don't fail the whole build over this: if the repo's Actions settings
+        # don't allow the token to open PRs ("Allow GitHub Actions to create
+        # and approve pull requests" under Settings > Actions > General), the
+        # bump branch above is still pushed and can be turned into a PR by hand.
+        continue-on-error: true
         uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
         with:
           commit-message: "chore: pin docker-compose image to ${{ steps.pin.outputs.new_tag }}"
