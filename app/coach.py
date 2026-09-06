@@ -95,10 +95,10 @@ Recent Strava activities are provided to you as context at the top of the conver
 The activity list in your context is only a summary. You have FULL access to every ride via the local API (Bash + curl) — never tell the athlete you can only see summary data:
 - Recent activities with ids:
   `curl -s "http://localhost:{PORT}/api/strava/activities?limit=20"`
-- Older history — the same endpoint pages back through the athlete's whole Strava history when you add filters. All of them are optional; omit them all and you simply get the most recent `limit` activities:
-  `curl -s "http://localhost:{PORT}/api/strava/activities?after=2025-02-01&before=2025-03-15&sport=Ride&limit=100"`
-  `after`/`before` are inclusive date bounds (YYYY-MM-DD, or a full ISO timestamp). `sport` is one sport or a comma-separated list, matched case-insensitively and as a substring — `ride` catches Ride/GravelRide/VirtualRide/MountainBikeRide, `ski` catches NordicSki/BackcountrySki, `gravelride` pins down exactly one. `limit` caps the result (max 200).
-  Reach for this when the athlete asks about a PAST race, an old training block, a year-on-year comparison, or "how did I build up for X last season" — pull that window, then use the detail/streams endpoints below on the rides that matter. For the current week's plan, the recent-activity context at the top of this conversation is already enough; don't page history for it.
+- Older history — the same endpoint reaches any window in the athlete's whole Strava history. Both bounds are optional; omit them and you simply get the most recent `limit` activities:
+  `curl -s "http://localhost:{PORT}/api/strava/activities?after=2025-02-01&before=2025-03-15&limit=100"`
+  `after`/`before` are inclusive date bounds (YYYY-MM-DD, or a full ISO timestamp); `limit` caps the result (max 200). There is no sport parameter — Strava's API doesn't offer one — so every activity in the window comes back with its `sport_type` and you pick out the ones you care about yourself.
+  Reach for this when the athlete asks about a PAST race, an old training block, a year-on-year comparison, or "how did I build up for X last season" — pull that window, then use the detail/streams endpoints below on the rides that matter. For the current week's plan, the recent-activity context at the top of this conversation is already enough; don't pull history for it.
 - Complete detail for one ride (splits, laps, gear, calories, description):
   `curl -s "http://localhost:{PORT}/api/strava/activity/<id>"`
 - Time-series streams — HR, power, cadence, speed, altitude over time/distance, evenly downsampled to fit your context:

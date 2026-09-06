@@ -13,7 +13,7 @@ LAN-only by intent; no UI auth. Endpoints:
   GET  /api/strava/connect     -> redirect to Strava OAuth (one-time)
   GET  /api/strava/callback    -> OAuth redirect target; stores tokens
   GET  /api/strava/activities  -> activity history (with ids); paged, and
-                                  filterable by ?after=&before=&sport=
+                                  windowed by ?after=&before=
   GET  /api/strava/activity/{id}          -> full activity detail
   GET  /api/strava/activity/{id}/streams  -> downsampled time-series streams
   GET  /api/wahoo/workouts     -> Wahoo workout history (fallback ride data)
@@ -266,21 +266,21 @@ async def chat_clear() -> JSONResponse:
 # --- Strava live data (used by the coach agent via curl, and debuggable) ----
 @app.get("/api/strava/activities")
 async def strava_activities(
-    limit: int = 20, after: str = "", before: str = "", sport: str = ""
+    limit: int = 20, after: str = "", before: str = ""
 ) -> JSONResponse:
-    """Activity history — recent by default, older and filtered on demand.
+    """Activity history — recent by default, any older window on demand.
 
-    With no filters this is the most recent `limit` activities (what the sync and
-    the weekly plan use). `after`/`before` (YYYY-MM-DD, ISO-8601 or epoch) and
-    `sport` (one sport or a comma-separated list, matched case-insensitively and
-    as a substring so `ride` catches GravelRide) page back through the athlete's
-    history instead, for analysing an old race or block.
+    With no bounds this is the most recent `limit` activities (what the sync and
+    the weekly plan use). `after`/`before` (YYYY-MM-DD, ISO-8601 or epoch,
+    inclusive) select a window anywhere in the athlete's history instead, for
+    analysing an old race or block. Each activity carries its `sport_type`; there
+    is no sport parameter because Strava's public API has none to pass it to.
     """
     limit = max(1, min(limit, 200))  # keep a stray ?limit=5000 out of the agent's context
     try:
         acts = await asyncio.to_thread(
             strava.list_activities, limit,
-            after=after or None, before=before or None, sports=sport or None,
+            after=after or None, before=before or None,
         )
     except ValueError as e:  # unparseable / inverted date bound — caller's fault
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -289,8 +289,7 @@ async def strava_activities(
     return JSONResponse({
         "activities": acts,
         "count": len(acts),
-        "filters": {"limit": limit, "after": after or None,
-                    "before": before or None, "sport": sport or None},
+        "filters": {"limit": limit, "after": after or None, "before": before or None},
     })
 
 

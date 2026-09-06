@@ -74,11 +74,11 @@ curl -fsS "$BASE/" | grep -q "Cycling Coach" && ok "dashboard renders" || bad "d
 check "GET /api/snapshot before any sync" 404 "$(code "$BASE/api/snapshot")"
 check "POST /api/sync without Strava app keys" 200 "$(code -X POST "$BASE/api/sync")"
 check "GET /api/strava/activities -> clean 502" 502 "$(code "$BASE/api/strava/activities")"
-# history filters are validated before any Strava call, so a bad date is a 400
-# even with no credentials, while well-formed filters fall through to the 502
+# date bounds are validated before any Strava call, so a bad one is a 400 even
+# with no credentials, while a well-formed window falls through to the 502
 check "GET /api/strava/activities?after=yesterday -> 400" 400 "$(code "$BASE/api/strava/activities?after=yesterday")"
 check "GET /api/strava/activities inverted range -> 400" 400 "$(code "$BASE/api/strava/activities?after=2026-08-01&before=2026-07-01")"
-check "GET /api/strava/activities filtered -> clean 502" 502 "$(code "$BASE/api/strava/activities?after=2025-02-01&before=2025-03-15&sport=Ride&limit=100")"
+check "GET /api/strava/activities windowed -> clean 502" 502 "$(code "$BASE/api/strava/activities?after=2025-02-01&before=2025-03-15&limit=100")"
 check "GET /api/strava/activity/1/streams -> clean 502" 502 "$(code "$BASE/api/strava/activity/1/streams")"
 check "GET /api/wahoo/workouts -> clean 503" 503 "$(code "$BASE/api/wahoo/workouts")"
 check "POST /api/chat/send malformed body -> 400" 400 "$(code -X POST -H 'Content-Type: application/json' --data 'not json' "$BASE/api/chat/send")"
