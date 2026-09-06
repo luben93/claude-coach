@@ -12,7 +12,8 @@ LAN-only by intent; no UI auth. Endpoints:
   POST /api/chat/clear         -> wipe the conversation
   GET  /api/strava/connect     -> redirect to Strava OAuth (one-time)
   GET  /api/strava/callback    -> OAuth redirect target; stores tokens
-  GET  /api/strava/activities  -> live recent-activity list (with ids)
+  GET  /api/strava/activities  -> activity history (with ids); paged, and
+                                  filterable by ?after=&before=&sport=
   GET  /api/strava/activity/{id}          -> full activity detail
   GET  /api/strava/activity/{id}/streams  -> downsampled time-series streams
   GET  /api/wahoo/workouts     -> Wahoo workout history (fallback ride data)
@@ -264,12 +265,33 @@ async def chat_clear() -> JSONResponse:
 
 # --- Strava live data (used by the coach agent via curl, and debuggable) ----
 @app.get("/api/strava/activities")
-async def strava_activities(limit: int = 20) -> JSONResponse:
+async def strava_activities(
+    limit: int = 20, after: str = "", before: str = "", sport: str = ""
+) -> JSONResponse:
+    """Activity history — recent by default, older and filtered on demand.
+
+    With no filters this is the most recent `limit` activities (what the sync and
+    the weekly plan use). `after`/`before` (YYYY-MM-DD, ISO-8601 or epoch) and
+    `sport` (one sport or a comma-separated list, matched case-insensitively and
+    as a substring so `ride` catches GravelRide) page back through the athlete's
+    history instead, for analysing an old race or block.
+    """
+    limit = max(1, min(limit, 200))  # keep a stray ?limit=5000 out of the agent's context
     try:
-        acts = await asyncio.to_thread(strava.list_activities, max(1, min(limit, 50)))
+        acts = await asyncio.to_thread(
+            strava.list_activities, limit,
+            after=after or None, before=before or None, sports=sport or None,
+        )
+    except ValueError as e:  # unparseable / inverted date bound — caller's fault
+        return JSONResponse({"error": str(e)}, status_code=400)
     except strava.StravaError as e:
         return JSONResponse({"error": str(e)}, status_code=502)
-    return JSONResponse({"activities": acts})
+    return JSONResponse({
+        "activities": acts,
+        "count": len(acts),
+        "filters": {"limit": limit, "after": after or None,
+                    "before": before or None, "sport": sport or None},
+    })
 
 
 @app.get("/api/strava/activity/{activity_id}")

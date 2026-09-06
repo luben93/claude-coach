@@ -155,6 +155,15 @@ under `data/` or a real `.env`.
   `/api/strava/activity/{id}/streams`, both covered by the `activity:read_all`
   scope), with the athlete's Wahoo workout history (`/api/wahoo/workouts`) as a
   fallback ride source.
+- **History, not just recent rides**: `/api/strava/activities` pages back through
+  the whole Strava history. Every filter is optional — with none of them it
+  returns the most recent `limit` activities (what the sync and the week plan
+  use); with them the coach can pull an old race or block:
+  `?after=2025-02-01&before=2025-03-15&sport=Ride&limit=100`. `after`/`before`
+  are inclusive date bounds (`YYYY-MM-DD`, ISO-8601 or epoch seconds); `sport`
+  is one sport or a comma-separated list, matched case-insensitively as a
+  substring (`ride` catches GravelRide and VirtualRide, `ski` catches NordicSki).
+  `limit` caps the result at 200. An unparseable or inverted date range is a 400.
 - The **⚙︎ Actions** menu in the header exposes the manual API operations:
   sync now, (re)authorize Strava/Wahoo, health check, refresh, clear chat.
 - Strava estimated power for bikes without a meter is treated as unreliable by the
