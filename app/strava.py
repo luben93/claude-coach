@@ -18,6 +18,7 @@ import logging
 import time
 import urllib.parse
 import urllib.request
+from datetime import date, datetime, time as _time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -143,27 +144,112 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Any:
         raise StravaError(f"Strava unreachable on {path}") from e
 
 
-def list_activities(limit: int = 20) -> list[dict[str, Any]]:
-    """Recent activities, normalized toward the shape snapshot.py expects."""
-    raw = _get("/athlete/activities", {"per_page": limit, "page": 1})
-    out = []
-    for a in raw:
-        out.append({
-            "id": a.get("id"),
-            "name": a.get("name"),
-            "sport_type": a.get("sport_type") or a.get("type"),
-            "start_local": a.get("start_date_local"),
-            "is_commute": a.get("commute", False),
-            "activity_tags": [],  # REST doesn't expose the workout tags the MCP did
-            "summary": {
-                "distance": a.get("distance"),
-                "elevation_gain": a.get("total_elevation_gain"),
-                "average_heartrate": a.get("average_heartrate"),
-                "average_watts": a.get("average_watts") if a.get("device_watts") else None,
-                "moving_time": a.get("moving_time"),
-            },
-        })
-    return out
+# Strava caps per_page at 200, so a `limit` above that needs more than one page.
+MAX_PER_PAGE = 200
+
+
+def _to_epoch(value: Any, *, end_of_day: bool = False) -> int | None:
+    """Parse a date bound into epoch seconds (UTC).
+
+    Accepts epoch seconds (int or digit string), `YYYY-MM-DD`, or a full ISO-8601
+    timestamp. A naive value is read as UTC. A date-only `before` bound becomes
+    23:59:59 of that day so a range like 2024-03-01..2024-03-31 includes the 31st.
+    Raises ValueError on anything unparseable — callers turn that into a 400.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"invalid date bound: {value!r}")
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if s.isdigit():
+        return int(s)
+    try:
+        if len(s) == 10:
+            d = date.fromisoformat(s)
+            dt = datetime.combine(d, _time.max if end_of_day else _time.min)
+        else:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(
+            f"invalid date bound {value!r} — use YYYY-MM-DD, an ISO-8601 "
+            "timestamp, or epoch seconds"
+        ) from e
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def _normalize(a: dict[str, Any]) -> dict[str, Any]:
+    """One raw Strava activity in the shape snapshot.py expects."""
+    return {
+        "id": a.get("id"),
+        "name": a.get("name"),
+        "sport_type": a.get("sport_type") or a.get("type"),
+        "start_local": a.get("start_date_local"),
+        "is_commute": a.get("commute", False),
+        "activity_tags": [],  # REST doesn't expose the workout tags the MCP did
+        "summary": {
+            "distance": a.get("distance"),
+            "elevation_gain": a.get("total_elevation_gain"),
+            "average_heartrate": a.get("average_heartrate"),
+            "average_watts": a.get("average_watts") if a.get("device_watts") else None,
+            "moving_time": a.get("moving_time"),
+        },
+    }
+
+
+def list_activities(
+    limit: int = 20,
+    *,
+    after: Any = None,
+    before: Any = None,
+) -> list[dict[str, Any]]:
+    """Activity history, newest first, normalized toward snapshot.py's shape.
+
+    Both date bounds are optional: with neither, this returns the most recent
+    `limit` activities exactly as before. With them it jumps straight to a window
+    anywhere in the athlete's history, which is what makes analysing an old race
+    possible instead of only the last few weeks. They accept YYYY-MM-DD, ISO-8601
+    or epoch seconds, and are inclusive at both ends. Raises ValueError for an
+    unparseable or inverted range.
+
+    Deliberately no sport filter: Strava's public API has no parameter for it
+    (only `before`/`after`/`page`/`per_page`), so filtering by sport would mean
+    scanning history client-side and silently returning a partial answer once the
+    scan gave up. The caller filters the returned list on `sport_type` instead.
+    """
+    limit = max(1, int(limit))
+    after_ts = _to_epoch(after)
+    before_ts = _to_epoch(before, end_of_day=True)
+    if after_ts is not None and before_ts is not None and after_ts >= before_ts:
+        raise ValueError("`after` must be earlier than `before`")
+
+    base: dict[str, Any] = {}
+    if after_ts is not None:
+        base["after"] = after_ts
+    if before_ts is not None:
+        base["before"] = before_ts
+
+    # Every activity Strava returns counts toward the limit, so a single page of
+    # `limit` covers it and we only loop when `limit` exceeds Strava's page cap.
+    # per_page stays fixed across pages — Strava offsets by (page-1)*per_page, so
+    # shrinking it mid-walk would re-read rows we already have and skip others.
+    per_page = min(MAX_PER_PAGE, limit)
+    out: list[dict[str, Any]] = []
+    page = 1
+    while len(out) < limit:
+        raw = _get("/athlete/activities", {**base, "per_page": per_page, "page": page})
+        if not raw:
+            break
+        out.extend(_normalize(a) for a in raw)
+        if len(raw) < per_page:
+            break  # short page = end of history (or of the date range)
+        page += 1
+    log.info("strava activities: %d returned (limit=%d after=%s before=%s pages=%d)",
+             len(out), limit, after_ts, before_ts, page)
+    return out[:limit]
 
 
 def get_activity(activity_id: int | str) -> dict[str, Any]:

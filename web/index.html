@@ -15,7 +15,9 @@
   html { -webkit-text-size-adjust:100%; }
   body { margin:0; background:var(--bg); color:var(--text);
     font-family:"Avenir Next","Segoe UI",system-ui,-apple-system,sans-serif;
-    line-height:1.5; font-size:15px; }
+    line-height:1.5; font-size:15px;
+    /* no double-tap-to-zoom (and no 300ms tap delay) — pinch zoom still works */
+    touch-action:manipulation; }
   .wrap { max-width:1040px; margin:0 auto; padding:24px 20px 60px; }
   header { display:flex; align-items:center; gap:14px; padding-bottom:18px;
     border-bottom:1px solid var(--line); margin-bottom:24px; flex-wrap:wrap; }
@@ -142,10 +144,18 @@
   .wahoo-plan .wmeta { font-size:12px; color:var(--faint); margin-top:2px; }
   .wahoo-plan button { flex-shrink:0; background:none; border:1px solid var(--amber); color:var(--amber); border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; font-weight:600; }
   .wahoo-plan button:disabled { opacity:0.5; cursor:default; }
+  /* --- touch devices: never auto-zoom on focus ------------------------------
+     WebKit scales the page up when it focuses a text field or select whose font
+     is under 16px. Keyed off the pointer rather than the width so tablets and
+     landscape phones are covered too, and the element selectors are repeated at
+     class strength because the bare ones lose to the rules above. */
+  @media (pointer:coarse){
+    input, textarea, select,
+    .composer textarea, .route-form input, .route-form select { font-size:16px; }
+  }
   /* --- mobile ---------------------------------------------------------------
-     16px inputs stop iOS Safari auto-zooming on focus (the "keeps resizing"
-     effect); dvh keeps the chat sized to the *visible* viewport as browser
-     chrome and the keyboard come and go. */
+     dvh keeps the chat sized to the *visible* viewport as browser chrome and
+     the keyboard come and go. */
   @media (max-width:600px){
     .wrap { padding:14px 12px 40px; }
     .card { padding:14px; }
@@ -153,7 +163,6 @@
     header h1 { font-size:19px; }
     .chat-card { height:74dvh; min-height:380px; }
     .msg { max-width:94%; }
-    .composer textarea, .route-form input, .route-form select,
     .composer button, .route-form button { font-size:16px; }
     .stats { gap:8px; }
     .stat { padding:10px 10px; }
@@ -260,6 +269,22 @@
 </div>
 
 <script>
+// --- mobile: stop the involuntary zoom on focus -----------------------------
+// iOS WebKit scales the page up when a form control is focused. 16px fonts (see
+// the CSS above) are meant to prevent it but don't always — capping the scale
+// does. iOS 10+ still honours a deliberate pinch, so only the *automatic* zoom
+// goes away, and we touch the meta on iOS alone so other engines keep theirs.
+(function lockScaleOnIOS() {
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!isIOS) return;
+  const meta = document.querySelector('meta[name="viewport"]');
+  if (meta && !/maximum-scale/.test(meta.content)) {
+    meta.content += ", maximum-scale=1";
+  }
+})();
+
 // --- markdown ---------------------------------------------------------------
 marked.setOptions({ breaks: true, gfm: true });
 function renderMd(text) {
