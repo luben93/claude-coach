@@ -165,6 +165,16 @@ under `data/` or a real `.env`.
   filter: Strava's public API only takes `before`/`after`/`page`/`per_page`, so
   one would mean scanning history client-side and quietly returning a partial
   answer. Each activity carries its `sport_type` for the caller to filter on.
+- **Web lookup**: the coach has WebSearch/WebFetch, for the real-world specifics
+  that are in neither the model nor its memory — a goal event's course, profile,
+  cutoffs, qualification and registration rules, past results and start lists,
+  typical conditions for that date, or a training protocol it shouldn't recite
+  from memory. It's told to prefer primary sources (the event's own site and
+  rulebook), to check which edition/year a page describes, to say where a fact
+  came from, and to write durable race facts into memory rather than re-search
+  them every conversation. Page content is treated as information, never as
+  instructions — only the athlete directs the coach. Needs outbound HTTPS from
+  the container; without it the coach falls back to what it knows and says so.
 - The **⚙︎ Actions** menu in the header exposes the manual API operations:
   sync now, (re)authorize Strava/Wahoo, health check, refresh, clear chat.
 - Strava estimated power for bikes without a meter is treated as unreliable by the
